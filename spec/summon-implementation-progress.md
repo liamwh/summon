@@ -2,22 +2,21 @@
 
 ## Last updated
 
-- Commit: d17f303 (pending new commit)
+- Commit: b506e07 (pending new commit)
 - Date: 2026-06-04
-- Agent task: Implement app target resolution (AppTarget enum and classification)
+- Agent task: Wire `AppTarget` into `ResolvedBinding` via `resolve_binding()`
 
 ## What changed in this iteration
 
-- Added `app.rs` module with `AppTarget` enum: `BundleId(String)`, `AppName(String)`, `AppPath(String)`
-- Added `classify_app_target()` function that classifies an `app` config string into a typed target
-- Classification rules: paths (start with `/` or `~`, must end in `.app`) → bundle IDs (dot-separated segments with at least one letter) → app names (fallback)
-- Added `AppTargetError::InvalidAppPath` for paths missing the `.app` extension
-- Added 28 unit tests covering bundle IDs, app names, app paths, error cases, and heuristic edge cases
-- Wired `app` module into `main.rs`
+- Changed `ResolvedBinding.app` from `String` to `AppTarget` (renamed field to `target`)
+- Added `ResolveError::InvalidAppTarget` variant for classification failures
+- `resolve_binding()` now calls `classify_app_target()` and propagates errors
+- Updated existing test to assert against `AppTarget::BundleId`
+- Added 4 new tests: bundle ID classification, app name classification, app path classification, invalid path rejection
 
 ## Verification run
 
-- `cargo test --workspace` — 71 unit tests passed, 9 integration tests passed, 0 failed
+- `cargo test --workspace` — 75 unit tests passed, 9 integration tests passed, 0 failed
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean
 - `cargo fmt --all -- --check` — clean
 
@@ -29,6 +28,7 @@
   - Config module with full TOML model, path resolution, parsing, validation (22 tests)
   - Binding lookup and effective settings resolution (10 tests)
   - App target resolution with `AppTarget` enum and `classify_app_target()` (28 tests)
+  - `ResolvedBinding` now holds classified `AppTarget` instead of raw string (4 new tests)
   - CLI dispatch: `summon config path`, `summon config check`, and `summon list` are wired and working
   - Unimplemented commands (`app`, `doctor`, `<binding>`) fail clearly with "not yet implemented"
   - Workspace lint configuration (clippy pedantic, missing_docs, unwrap/expect warnings)
@@ -37,19 +37,19 @@
 - Partially done:
   - None
 - Not done:
-  - Launch/focus/cycle decision logic
   - App controller trait/interface (fakeable macOS boundary)
+  - Launch/focus/cycle decision logic
   - macOS app controller implementation (launch, focus, detect running/frontmost)
-  - Wiring `AppTarget` into `ResolvedBinding` (replace raw `app: String`)
   - Window cycling
   - `summon app <app>` — direct app targeting
+  - `summon <binding>` — binding dispatch (core path)
   - Diagnostics (`summon doctor`)
   - CI pipeline
   - Example configs for skhd, Raycast, etc.
 
 ## Next best task
 
-Wire `AppTarget` into the binding resolution pipeline. Update `ResolvedBinding` to hold a classified `AppTarget` instead of a raw `app: String`, so the decision layer can dispatch on the target type. This connects the classification logic to the config resolution path and is the last pure-logic piece before the macOS boundary trait is needed.
+Implement the app controller trait/interface — the fakeable macOS boundary. This is the interface the decision layer will use to check if an app is running, if it is frontmost, to launch it, and to focus it. Creating the trait with a fake implementation unlocks testing the launch/focus/cycle decision logic without macOS GUI access.
 
 ## Blockers / open questions
 
@@ -57,8 +57,8 @@ Wire `AppTarget` into the binding resolution pipeline. Update `ResolvedBinding` 
 
 ## Notes for next agent
 
-- `app::classify_app_target()` is the public entry point. It takes `&str` and returns `Result<AppTarget, AppTargetError>`.
-- `ResolvedBinding` in `config.rs` currently has `app: String`. The next step is to change this to hold an `AppTarget` (or add a parallel field), and call `classify_app_target()` inside `resolve_binding()`.
-- `EffectiveSettings::resolve()` handles the global/per-binding merge. Per-binding `Some(_)` values override global defaults; `None` falls through to global.
+- `ResolvedBinding.target` is now an `AppTarget` enum (`BundleId`, `AppName`, `AppPath`).
+- `resolve_binding()` is fully wired: config lookup → app classification → effective settings.
+- The next step is to define an `AppController` trait with methods like `is_running()`, `is_frontmost()`, `launch()`, `focus()`, and provide a `FakeAppController` for tests.
+- The decision logic (launch-if-not-running, focus-if-running, cycle-if-frontmost) should be pure functions that take an `AppController` + `ResolvedBinding` + `EffectiveSettings` and return an action.
 - `run()` in `cli.rs` is the single dispatch point for all commands.
-- Integration tests use `CARGO_BIN_EXE_summon` and set `XDG_CONFIG_HOME` to temp dirs for isolation.

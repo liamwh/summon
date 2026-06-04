@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::app::{self, AppTarget};
+
 // ---------------------------------------------------------------------------
 // Config model
 // ---------------------------------------------------------------------------
@@ -253,8 +255,8 @@ pub struct ResolvedBinding {
     /// The binding name as given on the command line.
     pub name: String,
 
-    /// The application target string (bundle ID, app name, or path).
-    pub app: String,
+    /// The classified application target.
+    pub target: AppTarget,
 
     /// The effective settings for this binding.
     pub settings: EffectiveSettings,
@@ -279,15 +281,26 @@ pub enum ResolveError {
         /// Formatted list of available binding names.
         available: String,
     },
+
+    /// The app target string could not be classified.
+    #[error("Invalid app target for binding \"{binding}\": {source}")]
+    InvalidAppTarget {
+        /// The binding name.
+        binding: String,
+        /// The classification error.
+        #[source]
+        source: app::AppTargetError,
+    },
 }
 
-/// Looks up a binding by name and computes its effective settings.
+/// Looks up a binding by name, classifies its app target, and computes its
+/// effective settings.
 ///
 /// # Errors
 ///
 /// Returns [`ResolveError::BindingNotFound`] when the name does not match any
-/// key in `config.bindings`. The error message includes the config path and a
-/// list of available binding names to help the user correct the invocation.
+/// key in `config.bindings`, or [`ResolveError::InvalidAppTarget`] when the
+/// binding's `app` string cannot be classified.
 pub fn resolve_binding(
     config: &Config,
     name: &str,
@@ -302,11 +315,17 @@ pub fn resolve_binding(
         }
     })?;
 
+    let target =
+        app::classify_app_target(&binding.app).map_err(|e| ResolveError::InvalidAppTarget {
+            binding: name.to_string(),
+            source: e,
+        })?;
+
     let settings = EffectiveSettings::resolve(&config.settings, binding);
 
     Ok(ResolvedBinding {
         name: name.to_string(),
-        app: binding.app.clone(),
+        target,
         settings,
     })
 }
@@ -747,7 +766,10 @@ mod tests {
         let resolved = resolve_binding(&config, "terminal", &path).expect("should resolve");
 
         assert_eq!(resolved.name, "terminal");
-        assert_eq!(resolved.app, "com.mitchellh.ghostty");
+        assert_eq!(
+            resolved.target,
+            AppTarget::BundleId("com.mitchellh.ghostty".into())
+        );
         assert!(resolved.settings.cycle_when_focused);
     }
 
@@ -818,6 +840,83 @@ mod tests {
 
         assert!(resolved.settings.cycle_when_focused); // inherited from global
         assert!(resolved.settings.launch_if_not_running); // overridden per-binding
+    }
+
+    // -- App target classification in resolve -------------------------------
+
+    #[test]
+    fn resolve_binding_classifies_bundle_id() {
+        let config = parse(
+            r#"
+            [bindings.finder]
+            app = "com.apple.finder"
+            "#,
+        )
+        .expect("should parse");
+
+        let resolved =
+            resolve_binding(&config, "finder", Path::new("/test.toml")).expect("should resolve");
+        assert_eq!(
+            resolved.target,
+            AppTarget::BundleId("com.apple.finder".into())
+        );
+    }
+
+    #[test]
+    fn resolve_binding_classifies_app_name() {
+        let config = parse(
+            r#"
+            [bindings.preview]
+            app = "Preview"
+            "#,
+        )
+        .expect("should parse");
+
+        let resolved =
+            resolve_binding(&config, "preview", Path::new("/test.toml")).expect("should resolve");
+        assert_eq!(resolved.target, AppTarget::AppName("Preview".into()));
+    }
+
+    #[test]
+    fn resolve_binding_classifies_app_path() {
+        let config = parse(
+            r#"
+            [bindings.custom]
+            app = "/Applications/My App.app"
+            "#,
+        )
+        .expect("should parse");
+
+        let resolved =
+            resolve_binding(&config, "custom", Path::new("/test.toml")).expect("should resolve");
+        assert_eq!(
+            resolved.target,
+            AppTarget::AppPath("/Applications/My App.app".into())
+        );
+    }
+
+    #[test]
+    fn resolve_binding_rejects_invalid_path() {
+        let config = parse(
+            r#"
+            [bindings.bad]
+            app = "/Applications/notanapp"
+            "#,
+        )
+        .expect("should parse");
+
+        let result = resolve_binding(&config, "bad", Path::new("/test.toml"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("bad"),
+            "error should mention binding name: {msg}"
+        );
+        assert!(
+            msg.contains(".app"),
+            "error should mention .app extension: {msg}"
+        );
     }
 
     // -- Available bindings formatting --------------------------------------
