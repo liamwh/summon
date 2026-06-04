@@ -2,6 +2,7 @@
 //! and cycling applications from declarative keybindings.
 
 mod cli;
+pub mod config;
 
 use clap::Parser;
 
