@@ -2,19 +2,17 @@
 
 ## Last updated
 
-- Commit: 47c5fe9 (pending new commit)
+- Commit: 8ad3249 (pending new commit)
 - Date: 2026-06-04
-- Agent task: Implement `summon doctor` — diagnostics command
+- Agent task: Add example configs for skhd, Raycast, shell aliases, and other integrations
 
 ## What changed in this iteration
 
-- Added `diagnostics` module with `run_doctor()` and `DoctorResult` tracking
-- Wired `summon doctor` command (was previously "not yet implemented")
-- Doctor checks: config path resolution, config file readability/validity, binding app target classification, app path existence, macOS Accessibility permission
-- Accessibility check degrades gracefully: timeouts/other errors produce warnings (not failures), only definitive "not allowed" errors are failures
-- 19 new unit tests for diagnostics (DoctorResult, check_config_file, check_bindings, format_target_label)
-- 2 new integration tests (doctor with valid config, doctor with missing config)
-- Test count: 126 unit tests, 14 integration tests (140 total)
+- Added `examples/summon.toml` — full example config with comments explaining each setting and binding
+- Added `examples/skhdrc` — skhd keybinding examples using Hyper key and expanded form
+- Added `examples/raycast/` — four Raycast script commands (terminal, browser, editor, finder)
+- Added `examples/shell-aliases.sh` — shell alias examples for common bindings
+- Updated README Integrations section with detailed per-tool instructions and links to example files
 
 ## Verification run
 
@@ -42,16 +40,17 @@
   - Workspace lint configuration (clippy pedantic, missing_docs, unwrap/expect warnings)
   - README with installation and usage
   - Integration test suite (14 tests)
+  - Example configs for skhd, Raycast, shell aliases
 - Partially done:
   - `cycle_window` on MacAppController is a no-op (graceful degradation, not a real implementation)
 - Not done:
   - Window cycling via macOS Accessibility API
   - CI pipeline
-  - Example configs for skhd, Raycast, etc.
+  - Packaging and release (GitHub Actions, Homebrew tap, binary artefacts)
 
 ## Next best task
 
-Implement example configs for skhd, Raycast, shell aliases, and other integrations. This is low-risk documentation work that helps users adopt Summon now that all core commands are wired.
+Add a CI pipeline (GitHub Actions) to run tests, clippy, and formatting checks on push and PR. This is the next step from the spec's Phase 9 (Packaging and release) and ensures the codebase stays healthy as development continues.
 
 ## Blockers / open questions
 
@@ -59,7 +58,7 @@ Implement example configs for skhd, Raycast, shell aliases, and other integratio
 
 ## Notes for next agent
 
-- All CLI commands are now fully wired: `summon <binding>`, `summon app <app>`, `summon list`, `summon config path`, `summon config check`, and `summon doctor`.
+- All CLI commands are fully wired: `summon <binding>`, `summon app <app>`, `summon list`, `summon config path`, `summon config check`, and `summon doctor`.
 - The `app_command_succeeds_with_bundle_id` and `binding_command_succeeds_with_valid_config` integration tests are slow (~60s each) because they call real macOS `osascript`. Similarly, the doctor integration tests call `osascript` for the accessibility check.
-- Unit tests for diagnostics avoid env var manipulation by calling internal functions directly with explicit paths/configs, making them deterministic and fast.
 - The `cycle_window` method on `MacAppController` is a no-op. Real window cycling requires the macOS Accessibility API.
+- Example files are in `examples/` — they are pure documentation, not Rust integration tests or build targets.

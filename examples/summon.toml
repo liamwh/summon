@@ -1,0 +1,45 @@
+# Summon example configuration
+# Copy to ~/.config/summon/summon.toml and edit to match your apps.
+
+[settings]
+# When true, pressing the same binding while the app is already focused cycles
+# to the next window belonging to that app.
+cycle_when_focused = true
+
+# When true, Summon will launch the app if it is not already running.
+launch_if_not_running = true
+
+# Focus strategy: "recent-window" focuses the most recently used window.
+focus_strategy = "recent-window"
+
+# --- Bindings ---
+# Each binding maps a short name to an app target.
+# App targets can be bundle identifiers, app names, or file paths.
+
+[bindings.terminal]
+app = "com.mitchellh.ghostty"
+
+[bindings.browser]
+app = "com.brave.Browser"
+
+[bindings.editor]
+app = "dev.zed.Zed"
+
+[bindings.finder]
+app = "com.apple.finder"
+
+[bindings.notes]
+app = "md.obsidian"
+
+[bindings.chat]
+app = "com.tinyspeck.slackmacgap"
+
+[bindings.music]
+app = "com.spotify.client"
+
+# Per-binding overrides: uncomment to override global settings for a specific binding.
+
+# [bindings.editor]
+# app = "dev.zed.Zed"
+# cycle_when_focused = false
+# launch_if_not_running = true

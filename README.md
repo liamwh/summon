@@ -107,13 +107,44 @@ This makes repeated keypresses useful rather than redundant.
 
 ## Integrations
 
-Summon works with any tool that can execute a command:
+Summon works with any tool that can execute a command. Example configs are in the [`examples/`](examples/) directory.
 
-**skhd** — `cmd - return : summon terminal`
+### skhd
 
-**Raycast** — script command calling `summon terminal`
+Add to `~/.skhdrc`:
 
-**Shell aliases** — `alias st='summon terminal'`
+```
+hyper - return : summon terminal
+hyper - b      : summon browser
+hyper - z      : summon editor
+hyper - f      : summon finder
+```
+
+See [`examples/skhdrc`](examples/skhdrc) for a complete example.
+
+### Raycast
+
+Copy the script commands from [`examples/raycast/`](examples/raycast/) to your Raycast scripts directory:
+
+```sh
+cp examples/raycast/summon-*.sh ~/.config/raycast/scripts/
+```
+
+### Shell aliases
+
+Add to `~/.zshrc` or `~/.bashrc`:
+
+```sh
+alias st='summon terminal'
+alias sb='summon browser'
+alias se='summon editor'
+```
+
+See [`examples/shell-aliases.sh`](examples/shell-aliases.sh) for more.
+
+### Other tools
+
+Summon also works with [Karabiner-Elements](https://karabiner-elements.pqrs.org/), [Hammerspoon](https://www.hammerspoon.org/), [Alfred](https://www.alfredapp.com/), and [AeroSpace](https://github.com/nikitabobko/AeroSpace). Any tool that can run a shell command can invoke `summon <binding>`.
 
 ## License
 

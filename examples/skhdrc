@@ -1,0 +1,22 @@
+# Summon + skhd example
+# Add these lines to your ~/.skhdrc
+#
+# The Hyper key (cmd + alt + ctrl + shift) is a popular choice for app-switching
+# bindings because almost no application uses it for its own shortcuts.
+#
+# Requires: https://github.com/koekeishiya/skhd
+
+# --- App switching (Hyper key) ---
+
+hyper - return : summon terminal
+hyper - b      : summon browser
+hyper - z      : summon editor
+hyper - f      : summon finder
+hyper - n      : summon notes
+
+# --- Expanded form (if your skhd version doesn't support "hyper") ---
+
+cmd + alt + ctrl + shift - return : summon terminal
+cmd + alt + ctrl + shift - b      : summon browser
+cmd + alt + ctrl + shift - z      : summon editor
+cmd + alt + ctrl + shift - f      : summon finder
