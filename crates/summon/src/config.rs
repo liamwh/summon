@@ -216,7 +216,7 @@ fn validate(config: &Config) -> Result<(), ConfigError> {
 // ---------------------------------------------------------------------------
 
 /// Fully resolved settings for a binding, with per-binding overrides applied.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EffectiveSettings {
     /// Whether to cycle to the next window when the target app is already focused.
     pub cycle_when_focused: bool,

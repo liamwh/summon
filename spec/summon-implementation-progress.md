@@ -2,21 +2,23 @@
 
 ## Last updated
 
-- Commit: b506e07 (pending new commit)
+- Commit: 4d63900 (pending new commit)
 - Date: 2026-06-04
-- Agent task: Wire `AppTarget` into `ResolvedBinding` via `resolve_binding()`
+- Agent task: Implement app controller trait with `FakeAppController` and decision logic
 
 ## What changed in this iteration
 
-- Changed `ResolvedBinding.app` from `String` to `AppTarget` (renamed field to `target`)
-- Added `ResolveError::InvalidAppTarget` variant for classification failures
-- `resolve_binding()` now calls `classify_app_target()` and propagates errors
-- Updated existing test to assert against `AppTarget::BundleId`
-- Added 4 new tests: bundle ID classification, app name classification, app path classification, invalid path rejection
+- Added `controller.rs` module with `AppController` trait defining the fakeable macOS boundary
+- Implemented `FakeAppController` with builder-pattern methods (`set_running`, `set_frontmost`)
+- Implemented `decide_action()` pure function: determines Launch/Focus/Cycle/NoOp from app state + settings
+- Implemented `execute_action()` to dispatch a decided action against the controller
+- Defined `AppAction` enum: `Launch`, `Focus`, `Cycle`, `NoOp`
+- Added `Default` derive to `EffectiveSettings` in config.rs
+- Added 20 new unit tests covering all decision-table rows, multiple target types, and fake controller behaviour
 
 ## Verification run
 
-- `cargo test --workspace` — 75 unit tests passed, 9 integration tests passed, 0 failed
+- `cargo test --workspace` — 95 unit tests passed, 9 integration tests passed, 0 failed
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean
 - `cargo fmt --all -- --check` — clean
 
@@ -28,7 +30,10 @@
   - Config module with full TOML model, path resolution, parsing, validation (22 tests)
   - Binding lookup and effective settings resolution (10 tests)
   - App target resolution with `AppTarget` enum and `classify_app_target()` (28 tests)
-  - `ResolvedBinding` now holds classified `AppTarget` instead of raw string (4 new tests)
+  - `ResolvedBinding` holds classified `AppTarget` instead of raw string (4 tests)
+  - `AppController` trait with `FakeAppController` for deterministic testing (20 tests)
+  - `decide_action()` pure decision logic (launch/focus/cycle/noop)
+  - `execute_action()` dispatches decided action against controller
   - CLI dispatch: `summon config path`, `summon config check`, and `summon list` are wired and working
   - Unimplemented commands (`app`, `doctor`, `<binding>`) fail clearly with "not yet implemented"
   - Workspace lint configuration (clippy pedantic, missing_docs, unwrap/expect warnings)
@@ -37,19 +42,17 @@
 - Partially done:
   - None
 - Not done:
-  - App controller trait/interface (fakeable macOS boundary)
-  - Launch/focus/cycle decision logic
-  - macOS app controller implementation (launch, focus, detect running/frontmost)
+  - macOS app controller implementation (real launch, focus, detect running/frontmost)
   - Window cycling
   - `summon app <app>` — direct app targeting
-  - `summon <binding>` — binding dispatch (core path)
+  - `summon <binding>` — binding dispatch (core path: config → resolve → decide → execute)
   - Diagnostics (`summon doctor`)
   - CI pipeline
   - Example configs for skhd, Raycast, etc.
 
 ## Next best task
 
-Implement the app controller trait/interface — the fakeable macOS boundary. This is the interface the decision layer will use to check if an app is running, if it is frontmost, to launch it, and to focus it. Creating the trait with a fake implementation unlocks testing the launch/focus/cycle decision logic without macOS GUI access.
+Wire the `summon <binding>` core command path: parse binding name → load config → resolve binding → decide action → execute action. The `FakeAppController` can be used initially to validate the end-to-end path works before building the real macOS controller.
 
 ## Blockers / open questions
 
@@ -57,8 +60,10 @@ Implement the app controller trait/interface — the fakeable macOS boundary. Th
 
 ## Notes for next agent
 
-- `ResolvedBinding.target` is now an `AppTarget` enum (`BundleId`, `AppName`, `AppPath`).
-- `resolve_binding()` is fully wired: config lookup → app classification → effective settings.
-- The next step is to define an `AppController` trait with methods like `is_running()`, `is_frontmost()`, `launch()`, `focus()`, and provide a `FakeAppController` for tests.
-- The decision logic (launch-if-not-running, focus-if-running, cycle-if-frontmost) should be pure functions that take an `AppController` + `ResolvedBinding` + `EffectiveSettings` and return an action.
-- `run()` in `cli.rs` is the single dispatch point for all commands.
+- `controller.rs` contains the `AppController` trait, `FakeAppController`, `decide_action()`, and `execute_action()`.
+- `decide_action(controller, target, settings)` is the pure function that maps app state + settings → `AppAction`.
+- `execute_action(controller, target, action)` dispatches the action to the controller.
+- The `FakeAppController` uses builder-style `set_running()` and `set_frontmost()` methods.
+- `EffectiveSettings` now derives `Default`.
+- The next step is to wire the core `summon <binding>` path through `cli.rs` using the controller and decision logic.
+- A real macOS controller implementing `AppController` will be needed next, but the core command path can be validated first with `FakeAppController`.
