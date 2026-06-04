@@ -2,22 +2,20 @@
 
 ## Last updated
 
-- Commit: 8ad3249 (pending new commit)
+- Commit: d0fedc1 (pending new commit)
 - Date: 2026-06-04
-- Agent task: Add example configs for skhd, Raycast, shell aliases, and other integrations
+- Agent task: Add GitHub Actions CI pipeline
 
 ## What changed in this iteration
 
-- Added `examples/summon.toml` — full example config with comments explaining each setting and binding
-- Added `examples/skhdrc` — skhd keybinding examples using Hyper key and expanded form
-- Added `examples/raycast/` — four Raycast script commands (terminal, browser, editor, finder)
-- Added `examples/shell-aliases.sh` — shell alias examples for common bindings
-- Updated README Integrations section with detailed per-tool instructions and links to example files
+- Added `.github/workflows/ci.yml` — runs fmt, clippy, and tests on push to main and on pull requests
+- Uses `macos-latest` runner since Summon is a macOS-specific tool
+- Uses `dtolnay/rust-toolchain@stable` with rustfmt and clippy components
+- Uses `Swatinem/rust-cache@v2` for Cargo build caching
 
 ## Verification run
 
-- `cargo test -p summon --bin summon` — 126 passed, 0 failed
-- `cargo test -p summon --test integration` — 14 passed, 0 failed
+- `cargo test --workspace` — 140 passed (126 unit + 14 integration), 0 failed
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean
 - `cargo fmt --all -- --check` — clean
 
@@ -41,16 +39,16 @@
   - README with installation and usage
   - Integration test suite (14 tests)
   - Example configs for skhd, Raycast, shell aliases
+  - GitHub Actions CI pipeline
 - Partially done:
   - `cycle_window` on MacAppController is a no-op (graceful degradation, not a real implementation)
 - Not done:
   - Window cycling via macOS Accessibility API
-  - CI pipeline
-  - Packaging and release (GitHub Actions, Homebrew tap, binary artefacts)
+  - Packaging and release (release profile, GitHub Actions release build, Homebrew tap, binary artefacts)
 
 ## Next best task
 
-Add a CI pipeline (GitHub Actions) to run tests, clippy, and formatting checks on push and PR. This is the next step from the spec's Phase 9 (Packaging and release) and ensures the codebase stays healthy as development continues.
+Implement window cycling via the macOS Accessibility API. This is the most significant functional gap — `cycle_window` is currently a no-op. Real cycling requires listing windows for a target app, detecting the current window, and selecting the next one.
 
 ## Blockers / open questions
 
@@ -60,5 +58,6 @@ Add a CI pipeline (GitHub Actions) to run tests, clippy, and formatting checks o
 
 - All CLI commands are fully wired: `summon <binding>`, `summon app <app>`, `summon list`, `summon config path`, `summon config check`, and `summon doctor`.
 - The `app_command_succeeds_with_bundle_id` and `binding_command_succeeds_with_valid_config` integration tests are slow (~60s each) because they call real macOS `osascript`. Similarly, the doctor integration tests call `osascript` for the accessibility check.
+- The CI pipeline runs on `macos-latest` so osascript-dependent tests work in CI.
 - The `cycle_window` method on `MacAppController` is a no-op. Real window cycling requires the macOS Accessibility API.
 - Example files are in `examples/` — they are pure documentation, not Rust integration tests or build targets.
