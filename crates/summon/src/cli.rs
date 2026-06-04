@@ -190,7 +190,7 @@ fn run_binding(name: &str) -> ExitCode {
         }
     };
 
-    let controller = controller::FakeAppController::new();
+    let controller = controller::MacAppController::new();
 
     let action = controller::decide_action(&controller, &resolved.target, &resolved.settings);
 

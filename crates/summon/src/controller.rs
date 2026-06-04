@@ -223,6 +223,171 @@ impl AppController for FakeAppController {
 }
 
 // ---------------------------------------------------------------------------
+// MacAppController
+// ---------------------------------------------------------------------------
+
+/// A macOS app controller that uses `open` and `osascript` to manage apps.
+///
+/// This controller uses the macOS `open` command for launching and focusing
+/// apps, and AppleScript via `osascript` for querying app state (running,
+/// frontmost).
+///
+/// For v1, [`cycle_window`](AppController::cycle_window) is a no-op. Window
+/// cycling requires the macOS Accessibility API and will be implemented in a
+/// future version.
+pub struct MacAppController;
+
+impl MacAppController {
+    /// Creates a new macOS app controller.
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Executes an AppleScript expression and returns its trimmed stdout.
+    fn run_applescript(script: &str) -> Result<String, String> {
+        let output = std::process::Command::new("osascript")
+            .args(["-e", script])
+            .output()
+            .map_err(|e| format!("Failed to run osascript: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("AppleScript error: {}", stderr.trim()));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// Returns `true` if a process with the given bundle identifier is running.
+    fn is_bundle_running(&self, bundle_id: &str) -> bool {
+        let script = format!(
+            "tell application \"System Events\" to (bundle identifier of every process) contains \"{}\"",
+            bundle_id
+        );
+        Self::run_applescript(&script)
+            .ok()
+            .is_some_and(|s| s == "true")
+    }
+
+    /// Returns `true` if a process with the given name is running.
+    fn is_process_running(&self, name: &str) -> bool {
+        let script = format!(
+            "tell application \"System Events\" to (name of every process) contains \"{}\"",
+            name
+        );
+        Self::run_applescript(&script)
+            .ok()
+            .is_some_and(|s| s == "true")
+    }
+
+    /// Returns the bundle identifier of the frontmost application, if available.
+    fn frontmost_bundle_id(&self) -> Option<String> {
+        let script = "tell application \"System Events\" to get bundle identifier of first process whose frontmost is true";
+        Self::run_applescript(script).ok()
+    }
+
+    /// Returns the process name of the frontmost application, if available.
+    fn frontmost_process_name(&self) -> Option<String> {
+        let script = "tell application \"System Events\" to get name of first process whose frontmost is true";
+        Self::run_applescript(script).ok()
+    }
+
+    /// Extracts the application name from a file path.
+    ///
+    /// For example, `/Applications/Safari.app` returns `Some("Safari")`.
+    /// Returns `None` if the path does not end with `.app`.
+    fn app_name_from_path(path: &str) -> Option<&str> {
+        let p = std::path::Path::new(path);
+        if p.extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+        {
+            p.file_stem().and_then(|s| s.to_str())
+        } else {
+            None
+        }
+    }
+}
+
+impl Default for MacAppController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AppController for MacAppController {
+    fn is_running(&self, target: &AppTarget) -> bool {
+        match target {
+            AppTarget::BundleId(id) => self.is_bundle_running(id),
+            AppTarget::AppName(name) => self.is_process_running(name),
+            AppTarget::AppPath(path) => {
+                Self::app_name_from_path(path).is_some_and(|name| self.is_process_running(name))
+            }
+        }
+    }
+
+    fn is_frontmost(&self, target: &AppTarget) -> bool {
+        match target {
+            AppTarget::BundleId(id) => self.frontmost_bundle_id().is_some_and(|f| f == *id),
+            AppTarget::AppName(name) => self.frontmost_process_name().is_some_and(|f| f == *name),
+            AppTarget::AppPath(path) => Self::app_name_from_path(path)
+                .is_some_and(|name| self.frontmost_process_name().is_some_and(|f| f == name)),
+        }
+    }
+
+    fn launch(&self, target: &AppTarget) -> Result<(), String> {
+        let result = match target {
+            AppTarget::BundleId(id) => std::process::Command::new("open")
+                .args(["-b", id])
+                .output()
+                .map_err(|e| format!("Failed to run open: {e}"))?,
+            AppTarget::AppName(name) => std::process::Command::new("open")
+                .args(["-a", name])
+                .output()
+                .map_err(|e| format!("Failed to run open: {e}"))?,
+            AppTarget::AppPath(path) => std::process::Command::new("open")
+                .arg(path)
+                .output()
+                .map_err(|e| format!("Failed to run open: {e}"))?,
+        };
+
+        if !result.status.success() {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            return Err(format_app_error(target, stderr.trim()));
+        }
+
+        Ok(())
+    }
+
+    fn focus(&self, target: &AppTarget) -> Result<(), String> {
+        // `open` brings the app to the foreground whether it was just launched
+        // or was already running, so launch and focus share the same mechanism.
+        self.launch(target)
+    }
+
+    fn cycle_window(&self, _target: &AppTarget) -> Result<(), String> {
+        // Window cycling is not yet implemented. Do nothing successfully so
+        // that cycle_when_focused=true degrades gracefully in v1.
+        Ok(())
+    }
+}
+
+/// Formats an error message from the `open` command with context about the target.
+fn format_app_error(target: &AppTarget, stderr: &str) -> String {
+    match target {
+        AppTarget::BundleId(id) => {
+            format!("Could not open app with bundle identifier \"{id}\": {stderr}")
+        }
+        AppTarget::AppName(name) => {
+            format!("Could not open app \"{name}\": {stderr}")
+        }
+        AppTarget::AppPath(path) => {
+            format!("Could not open app at \"{path}\": {stderr}")
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -459,5 +624,100 @@ mod tests {
             .set_running(&target, true)
             .set_running(&target, true);
         assert!(controller.is_running(&target));
+    }
+
+    // -- MacAppController construction -----------------------------------------
+
+    #[test]
+    fn mac_controller_new_works() {
+        let _controller = super::MacAppController::new();
+    }
+
+    #[test]
+    fn mac_controller_default_works() {
+        let _controller: super::MacAppController = Default::default();
+    }
+
+    // -- app_name_from_path ---------------------------------------------------
+
+    #[test]
+    fn app_name_from_path_standard() {
+        assert_eq!(
+            super::MacAppController::app_name_from_path("/Applications/Safari.app"),
+            Some("Safari")
+        );
+    }
+
+    #[test]
+    fn app_name_from_path_with_spaces() {
+        assert_eq!(
+            super::MacAppController::app_name_from_path("/Applications/Visual Studio Code.app"),
+            Some("Visual Studio Code")
+        );
+    }
+
+    #[test]
+    fn app_name_from_path_nested() {
+        assert_eq!(
+            super::MacAppController::app_name_from_path("/Applications/Utilities/Terminal.app"),
+            Some("Terminal")
+        );
+    }
+
+    #[test]
+    fn app_name_from_path_tilde() {
+        assert_eq!(
+            super::MacAppController::app_name_from_path("~/Applications/My App.app"),
+            Some("My App")
+        );
+    }
+
+    #[test]
+    fn app_name_from_path_no_app_extension() {
+        assert_eq!(
+            super::MacAppController::app_name_from_path("/Applications/Safari"),
+            None
+        );
+    }
+
+    #[test]
+    fn app_name_from_path_empty() {
+        assert_eq!(super::MacAppController::app_name_from_path(""), None);
+    }
+
+    // -- format_app_error -----------------------------------------------------
+
+    #[test]
+    fn format_app_error_bundle_id() {
+        let target = AppTarget::BundleId("com.example.app".into());
+        let msg = super::format_app_error(&target, "not found");
+        assert!(msg.contains("com.example.app"), "should contain bundle ID");
+        assert!(msg.contains("not found"), "should contain stderr");
+    }
+
+    #[test]
+    fn format_app_error_app_name() {
+        let target = AppTarget::AppName("Safari".into());
+        let msg = super::format_app_error(&target, "unable to find");
+        assert!(msg.contains("Safari"), "should contain app name");
+        assert!(msg.contains("unable to find"), "should contain stderr");
+    }
+
+    #[test]
+    fn format_app_error_app_path() {
+        let target = AppTarget::AppPath("/Apps/Test.app".into());
+        let msg = super::format_app_error(&target, "does not exist");
+        assert!(msg.contains("/Apps/Test.app"), "should contain path");
+        assert!(msg.contains("does not exist"), "should contain stderr");
+    }
+
+    // -- MacAppController cycle_window is no-op --------------------------------
+
+    #[test]
+    fn mac_controller_cycle_is_noop() {
+        let controller = super::MacAppController::new();
+        let target = finder();
+        let result = controller.cycle_window(&target);
+        assert!(result.is_ok());
     }
 }

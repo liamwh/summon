@@ -255,12 +255,12 @@ fn binding_command_succeeds_with_valid_config() {
 
     std::fs::write(
         summon_dir.join("summon.toml"),
-        "[settings]\nlaunch_if_not_running = true\n\n[bindings.terminal]\napp = \"com.mitchellh.ghostty\"\n",
+        "[settings]\nlaunch_if_not_running = true\n\n[bindings.finder]\napp = \"com.apple.finder\"\n",
     )
     .unwrap();
 
     let output = Command::new(summon_bin())
-        .args(["terminal"])
+        .args(["finder"])
         .env("XDG_CONFIG_HOME", &dir)
         .output()
         .expect("should run summon");
