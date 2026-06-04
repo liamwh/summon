@@ -163,18 +163,69 @@ fn unimplemented_app_command_fails() {
 }
 
 #[test]
-fn unimplemented_list_command_fails() {
+fn list_command_succeeds_with_config() {
+    let dir = std::env::temp_dir().join("summon_test_list_with_config");
+    let summon_dir = dir.join("summon");
+    std::fs::create_dir_all(&summon_dir).unwrap();
+
+    std::fs::write(
+        summon_dir.join("summon.toml"),
+        "[bindings.finder]\napp = \"com.apple.finder\"\n\n[bindings.browser]\napp = \"com.brave.Browser\"\n",
+    )
+    .unwrap();
+
     let output = Command::new(summon_bin())
         .args(["list"])
+        .env("XDG_CONFIG_HOME", &dir)
         .output()
         .expect("should run summon");
 
-    assert!(!output.status.success());
+    assert!(
+        output.status.success(),
+        "list should succeed with valid config: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("browser"),
+        "output should list browser: {stdout}"
+    );
+    assert!(
+        stdout.contains("finder"),
+        "output should list finder: {stdout}"
+    );
+    assert!(
+        stdout.contains("com.apple.finder"),
+        "output should show app target: {stdout}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn list_command_reports_missing_config() {
+    let dir = std::env::temp_dir().join("summon_test_list_missing_config");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let output = Command::new(summon_bin())
+        .args(["list"])
+        .env("XDG_CONFIG_HOME", &dir)
+        .output()
+        .expect("should run summon");
+
+    assert!(
+        !output.status.success(),
+        "list should fail when config is missing"
+    );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("not yet implemented"),
-        "should say not yet implemented: {stderr}"
+        stderr.contains("Could not read config file"),
+        "stderr should mention missing file: {stderr}"
     );
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

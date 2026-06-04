@@ -2,28 +2,25 @@
 
 ## Last updated
 
-- Commit: 39f3806 (pending new commit)
+- Commit: 61cf53e (pending new commit)
 - Date: 2026-06-04
-- Agent task: Wire config loading into CLI commands (`summon config path`, `summon config check`)
+- Agent task: Implement `summon list` command
 
 ## What changed in this iteration
 
-- Added `run()` dispatch function in `cli.rs` that routes CLI commands to handlers
-- Implemented `summon config path` — prints the resolved config file path
-- Implemented `summon config check` — validates config file, prints success with binding count or detailed error
-- Unimplemented commands (`app`, `list`, `doctor`, `<binding>`) return exit code 1 with "not yet implemented" message
-- `main()` now returns `ExitCode` and calls `cli::run()`
-- Added `Copy` derive on `ConfigCommand` enum (small, copy-only data)
-- Created `tests/integration.rs` with 8 integration tests:
-  - `config path` prints a valid path containing summon.toml
-  - `config check` reports missing config file
-  - `config check` succeeds with valid config (reports binding count)
-  - `config check` reports invalid config (missing required field)
-  - Unimplemented commands (`app`, `list`, `doctor`, `<binding>`) fail with clear message
+- Wired `Command::List` to new `run_list()` handler in `cli.rs`
+- `summon list` loads config, prints all bindings in aligned `name -> app` format
+- Empty config prints "No bindings configured." instead of nothing
+- Config load errors (missing file, invalid TOML) are reported clearly
+- Added 3 unit tests for list formatting: multi-binding alignment, single binding, empty config
+- Replaced the "not yet implemented" integration test for `list` with 2 real integration tests:
+  - `list_command_succeeds_with_config` — verifies output contains binding names and app targets
+  - `list_command_reports_missing_config` — verifies error when config is missing
 
 ## Verification run
 
-- `cargo test --workspace` — 38 passed (30 unit + 8 integration), 0 failed
+- `cargo test -p summon --bin summon -- --test-threads=1` — 33 passed, 0 failed
+- `cargo test -p summon --test integration -- --test-threads=1` — 9 passed, 0 failed
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean
 - `cargo fmt --all -- --check` — clean
 
@@ -33,29 +30,29 @@
   - Rust workspace with single `summon` crate
   - CLI definition via clap with all planned subcommands (8 parsing tests)
   - Config module with full TOML model, path resolution, parsing, validation (22 tests)
-  - CLI dispatch: `summon config path` and `summon config check` are wired and working
-  - Unimplemented commands fail clearly with "not yet implemented"
+  - CLI dispatch: `summon config path`, `summon config check`, and `summon list` are wired and working
+  - Unimplemented commands (`app`, `doctor`, `<binding>`) fail clearly with "not yet implemented"
   - Workspace lint configuration (clippy pedantic, missing_docs, unwrap/expect warnings)
   - README with installation and usage
   - .gitignore for Rust artifacts
-  - Integration test suite (8 tests)
+  - Integration test suite (9 tests)
 - Partially done:
   - None
 - Not done:
-  - `summon list` — list configured bindings
   - Binding lookup and effective settings resolution
   - App target resolution (bundle ID, name, path classification)
   - Launch/focus/cycle decision logic
   - App controller trait/interface (fakeable macOS boundary)
   - macOS app controller implementation (launch, focus, detect running/frontmost)
   - Window cycling
+  - `summon app <app>` — direct app targeting
   - Diagnostics (`summon doctor`)
   - CI pipeline
   - Example configs for skhd, Raycast, etc.
 
 ## Next best task
 
-Implement `summon list` to print all configured bindings. This is a small, natural extension of the config wiring just completed — it loads config and prints the binding names and their app targets, proving the end-to-end config → output path works.
+Implement binding lookup and effective settings resolution. This is the core domain logic that resolves a binding name to its app target and computes the effective settings (merging global defaults with per-binding overrides). It's prerequisite for `summon <binding>` to work and keeps macOS effects out of the picture while building testable pure logic.
 
 ## Blockers / open questions
 
@@ -67,3 +64,4 @@ Implement `summon list` to print all configured bindings. This is a small, natur
 - Integration tests use `CARGO_BIN_EXE_summon` and set `XDG_CONFIG_HOME` to temp dirs for isolation.
 - The `Binding` struct uses `Option<bool>` / `Option<FocusStrategy>` for per-binding overrides. Effective settings resolution (merging global + per-binding) has not been implemented yet.
 - `BTreeMap` is used for bindings to ensure deterministic ordering (important for `summon list`).
+- `summon list` output format: `name -> app_target`, left-aligned to the longest binding name.

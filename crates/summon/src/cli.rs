@@ -64,10 +64,7 @@ pub fn run(cli: Cli) -> ExitCode {
             eprintln!("not yet implemented: summon app");
             ExitCode::FAILURE
         }
-        Some(Command::List) => {
-            eprintln!("not yet implemented: summon list");
-            ExitCode::FAILURE
-        }
+        Some(Command::List) => run_list(),
         Some(Command::Doctor) => {
             eprintln!("not yet implemented: summon doctor");
             ExitCode::FAILURE
@@ -90,6 +87,39 @@ fn run_config(subcommand: ConfigCommand) -> ExitCode {
         ConfigCommand::Path => run_config_path(),
         ConfigCommand::Check => run_config_check(),
     }
+}
+
+/// `summon list` — prints all configured bindings.
+fn run_list() -> ExitCode {
+    let path = match config::config_path() {
+        Ok(p) => p,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let config = match config::load_from(&path) {
+        Ok(c) => c,
+        Err(err) => {
+            eprintln!("Config error in {}:", path.display());
+            eprintln!("  {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if config.bindings.is_empty() {
+        println!("No bindings configured.");
+        return ExitCode::SUCCESS;
+    }
+
+    let max_name_len = config.bindings.keys().map(String::len).max().unwrap_or(0);
+
+    for (name, binding) in &config.bindings {
+        println!("{name:max_name_len$} -> {}", binding.app);
+    }
+
+    ExitCode::SUCCESS
 }
 
 /// `summon config path` — prints the active config file path.
@@ -201,5 +231,68 @@ mod tests {
         let cli = Cli::try_parse_from(["summon"]).expect("should parse");
         assert!(cli.binding.is_none());
         assert!(cli.command.is_none());
+    }
+
+    // -- List formatting tests -----------------------------------------------
+
+    #[test]
+    fn format_binding_list_aligns_names() {
+        let config = config::parse(
+            r#"
+            [bindings.browser]
+            app = "com.brave.Browser"
+
+            [bindings.terminal]
+            app = "com.mitchellh.ghostty"
+
+            [bindings.editor]
+            app = "dev.zed.Zed"
+            "#,
+        )
+        .expect("should parse");
+
+        let max_name_len = config.bindings.keys().map(String::len).max().unwrap_or(0);
+
+        // "terminal" is the longest name at 8 chars
+        assert_eq!(max_name_len, 8);
+
+        let lines: Vec<String> = config
+            .bindings
+            .iter()
+            .map(|(name, binding)| format!("{name:max_name_len$} -> {}", binding.app))
+            .collect();
+
+        // BTreeMap gives sorted order: browser, editor, terminal
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "browser  -> com.brave.Browser");
+        assert_eq!(lines[1], "editor   -> dev.zed.Zed");
+        assert_eq!(lines[2], "terminal -> com.mitchellh.ghostty");
+    }
+
+    #[test]
+    fn format_binding_list_single_binding() {
+        let config = config::parse(
+            r#"
+            [bindings.finder]
+            app = "com.apple.finder"
+            "#,
+        )
+        .expect("should parse");
+
+        let max_name_len = config.bindings.keys().map(String::len).max().unwrap_or(0);
+
+        let lines: Vec<String> = config
+            .bindings
+            .iter()
+            .map(|(name, binding)| format!("{name:max_name_len$} -> {}", binding.app))
+            .collect();
+
+        assert_eq!(lines, ["finder -> com.apple.finder"]);
+    }
+
+    #[test]
+    fn format_binding_list_empty_config() {
+        let config = config::parse("").expect("should parse empty config");
+        assert!(config.bindings.is_empty());
     }
 }
