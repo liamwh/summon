@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 use crate::config;
+use crate::controller;
 use clap::Parser;
 
 /// Summon — open, focus, and cycle macOS apps from your keyboard.
@@ -71,8 +72,7 @@ pub fn run(cli: Cli) -> ExitCode {
         }
         None => {
             if let Some(binding) = cli.binding {
-                eprintln!("not yet implemented: summon <binding> (binding: {binding})");
-                ExitCode::FAILURE
+                run_binding(&binding)
             } else {
                 // No args — clap already printed help.
                 ExitCode::SUCCESS
@@ -159,6 +159,47 @@ fn run_config_check() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `summon <binding>` — the core command path.
+///
+/// Loads config, resolves the binding, decides the action, and executes it.
+fn run_binding(name: &str) -> ExitCode {
+    let path = match config::config_path() {
+        Ok(p) => p,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let config = match config::load_from(&path) {
+        Ok(c) => c,
+        Err(err) => {
+            eprintln!("Config error in {}:", path.display());
+            eprintln!("  {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let resolved = match config::resolve_binding(&config, name, &path) {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let controller = controller::FakeAppController::new();
+
+    let action = controller::decide_action(&controller, &resolved.target, &resolved.settings);
+
+    if let Err(err) = controller::execute_action(&controller, &resolved.target, action) {
+        eprintln!("Failed to {action:?} {}: {err}", resolved.name);
+        return ExitCode::FAILURE;
+    }
+
+    ExitCode::SUCCESS
 }
 
 #[cfg(test)]

@@ -243,21 +243,126 @@ fn unimplemented_doctor_command_fails() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// summon <binding> — core command path
+// ---------------------------------------------------------------------------
+
 #[test]
-fn unimplemented_binding_command_fails() {
+fn binding_command_succeeds_with_valid_config() {
+    let dir = std::env::temp_dir().join("summon_test_binding_valid");
+    let summon_dir = dir.join("summon");
+    std::fs::create_dir_all(&summon_dir).unwrap();
+
+    std::fs::write(
+        summon_dir.join("summon.toml"),
+        "[settings]\nlaunch_if_not_running = true\n\n[bindings.terminal]\napp = \"com.mitchellh.ghostty\"\n",
+    )
+    .unwrap();
+
     let output = Command::new(summon_bin())
         .args(["terminal"])
+        .env("XDG_CONFIG_HOME", &dir)
         .output()
         .expect("should run summon");
 
-    assert!(!output.status.success());
+    assert!(
+        output.status.success(),
+        "binding should succeed with valid config: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn binding_command_reports_missing_config() {
+    let dir = std::env::temp_dir().join("summon_test_binding_missing_config");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let output = Command::new(summon_bin())
+        .args(["terminal"])
+        .env("XDG_CONFIG_HOME", &dir)
+        .output()
+        .expect("should run summon");
+
+    assert!(
+        !output.status.success(),
+        "binding should fail when config is missing"
+    );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("not yet implemented"),
-        "should say not yet implemented: {stderr}"
+        stderr.contains("Could not read config file"),
+        "stderr should mention missing file: {stderr}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn binding_command_reports_unknown_binding() {
+    let dir = std::env::temp_dir().join("summon_test_binding_unknown");
+    let summon_dir = dir.join("summon");
+    std::fs::create_dir_all(&summon_dir).unwrap();
+
+    std::fs::write(
+        summon_dir.join("summon.toml"),
+        "[bindings.browser]\napp = \"com.brave.Browser\"\n",
+    )
+    .unwrap();
+
+    let output = Command::new(summon_bin())
+        .args(["terminal"])
+        .env("XDG_CONFIG_HOME", &dir)
+        .output()
+        .expect("should run summon");
+
+    assert!(
+        !output.status.success(),
+        "binding should fail for unknown binding name"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Could not resolve binding: terminal"),
+        "stderr should mention unknown binding: {stderr}"
     );
     assert!(
-        stderr.contains("terminal"),
-        "should mention the binding name: {stderr}"
+        stderr.contains("browser"),
+        "stderr should suggest available bindings: {stderr}"
     );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn binding_command_reports_invalid_config() {
+    let dir = std::env::temp_dir().join("summon_test_binding_invalid_config");
+    let summon_dir = dir.join("summon");
+    std::fs::create_dir_all(&summon_dir).unwrap();
+
+    std::fs::write(
+        summon_dir.join("summon.toml"),
+        "[bindings.broken]\ncycle_when_focused = true\n",
+    )
+    .unwrap();
+
+    let output = Command::new(summon_bin())
+        .args(["broken"])
+        .env("XDG_CONFIG_HOME", &dir)
+        .output()
+        .expect("should run summon");
+
+    assert!(
+        !output.status.success(),
+        "binding should fail with invalid config"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Config error"),
+        "stderr should mention config error: {stderr}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
 }
