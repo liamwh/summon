@@ -5,6 +5,7 @@ pub mod app;
 mod cli;
 pub mod config;
 pub mod controller;
+pub mod diagnostics;
 
 use clap::Parser;
 

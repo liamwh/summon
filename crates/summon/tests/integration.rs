@@ -251,18 +251,63 @@ fn list_command_reports_missing_config() {
 }
 
 #[test]
-fn unimplemented_doctor_command_fails() {
+fn doctor_command_runs_diagnostics() {
+    let dir = std::env::temp_dir().join("summon_test_doctor_integration");
+    let summon_dir = dir.join("summon");
+    std::fs::create_dir_all(&summon_dir).unwrap();
+
+    std::fs::write(
+        summon_dir.join("summon.toml"),
+        "[bindings.finder]\napp = \"com.apple.finder\"\n",
+    )
+    .unwrap();
+
     let output = Command::new(summon_bin())
         .args(["doctor"])
+        .env("XDG_CONFIG_HOME", &dir)
         .output()
         .expect("should run summon");
 
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("not yet implemented"),
-        "should say not yet implemented: {stderr}"
+        stdout.contains("Summon doctor"),
+        "should print doctor header: {stdout}"
     );
+    assert!(
+        stdout.contains("Config path:"),
+        "should print config path: {stdout}"
+    );
+    assert!(
+        stdout.contains("Accessibility:"),
+        "should check accessibility: {stdout}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn doctor_command_reports_missing_config() {
+    let dir = std::env::temp_dir().join("summon_test_doctor_missing_integration");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let output = Command::new(summon_bin())
+        .args(["doctor"])
+        .env("XDG_CONFIG_HOME", &dir)
+        .output()
+        .expect("should run summon");
+
+    assert!(
+        !output.status.success(),
+        "doctor should fail when config is missing"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("not found"),
+        "should mention config not found: {stdout}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---------------------------------------------------------------------------

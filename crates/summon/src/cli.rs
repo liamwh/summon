@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use crate::app;
 use crate::config;
 use crate::controller;
+use crate::diagnostics;
 use clap::Parser;
 
 /// Summon — open, focus, and cycle macOS apps from your keyboard.
@@ -64,10 +65,7 @@ pub fn run(cli: Cli) -> ExitCode {
         Some(Command::Config { subcommand }) => run_config(subcommand),
         Some(Command::App { ref app }) => run_app(app),
         Some(Command::List) => run_list(),
-        Some(Command::Doctor) => {
-            eprintln!("not yet implemented: summon doctor");
-            ExitCode::FAILURE
-        }
+        Some(Command::Doctor) => run_doctor(),
         None => {
             if let Some(binding) = cli.binding {
                 run_binding(&binding)
@@ -227,6 +225,26 @@ fn run_binding(name: &str) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// `summon doctor` — runs diagnostic checks.
+fn run_doctor() -> ExitCode {
+    println!("Summon doctor");
+    println!();
+    let result = diagnostics::run_doctor();
+    println!();
+    println!(
+        "{} check(s): {} passed, {} warning(s), {} failed",
+        result.checks, result.passed, result.warnings, result.failures
+    );
+
+    if result.is_ok() {
+        println!("Summon looks healthy.");
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("Some checks failed. See above for details.");
+        ExitCode::FAILURE
+    }
 }
 
 #[cfg(test)]
