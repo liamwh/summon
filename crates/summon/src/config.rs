@@ -210,6 +210,121 @@ fn validate(config: &Config) -> Result<(), ConfigError> {
 }
 
 // ---------------------------------------------------------------------------
+// Effective settings resolution
+// ---------------------------------------------------------------------------
+
+/// Fully resolved settings for a binding, with per-binding overrides applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EffectiveSettings {
+    /// Whether to cycle to the next window when the target app is already focused.
+    pub cycle_when_focused: bool,
+
+    /// Whether to launch the target app if it is not already running.
+    pub launch_if_not_running: bool,
+
+    /// Focus strategy to use.
+    pub focus_strategy: FocusStrategy,
+}
+
+impl EffectiveSettings {
+    /// Resolves effective settings by merging global [`Settings`] with per-binding overrides.
+    ///
+    /// Per-binding values (`Some`) take precedence over global defaults.
+    pub fn resolve(global: &Settings, binding: &Binding) -> Self {
+        Self {
+            cycle_when_focused: binding
+                .cycle_when_focused
+                .unwrap_or(global.cycle_when_focused),
+            launch_if_not_running: binding
+                .launch_if_not_running
+                .unwrap_or(global.launch_if_not_running),
+            focus_strategy: binding.focus_strategy.unwrap_or(global.focus_strategy),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Binding resolution
+// ---------------------------------------------------------------------------
+
+/// A fully resolved binding, ready for action dispatch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedBinding {
+    /// The binding name as given on the command line.
+    pub name: String,
+
+    /// The application target string (bundle ID, app name, or path).
+    pub app: String,
+
+    /// The effective settings for this binding.
+    pub settings: EffectiveSettings,
+}
+
+/// Errors from binding resolution.
+#[derive(Debug, Error)]
+pub enum ResolveError {
+    /// No binding with the requested name exists in the config.
+    #[error(
+        "Could not resolve binding: {name}\n\
+         No binding named \"{name}\" was found in:\n\
+         {path}\n\
+         Available bindings:\n\
+         {available}"
+    )]
+    BindingNotFound {
+        /// The binding name that was requested.
+        name: String,
+        /// Path to the config file that was searched.
+        path: PathBuf,
+        /// Formatted list of available binding names.
+        available: String,
+    },
+}
+
+/// Looks up a binding by name and computes its effective settings.
+///
+/// # Errors
+///
+/// Returns [`ResolveError::BindingNotFound`] when the name does not match any
+/// key in `config.bindings`. The error message includes the config path and a
+/// list of available binding names to help the user correct the invocation.
+pub fn resolve_binding(
+    config: &Config,
+    name: &str,
+    config_path: &Path,
+) -> Result<ResolvedBinding, ResolveError> {
+    let binding = config.bindings.get(name).ok_or_else(|| {
+        let available = format_available_bindings(&config.bindings);
+        ResolveError::BindingNotFound {
+            name: name.to_string(),
+            path: config_path.to_path_buf(),
+            available,
+        }
+    })?;
+
+    let settings = EffectiveSettings::resolve(&config.settings, binding);
+
+    Ok(ResolvedBinding {
+        name: name.to_string(),
+        app: binding.app.clone(),
+        settings,
+    })
+}
+
+/// Formats the available binding names for error messages.
+fn format_available_bindings(bindings: &BTreeMap<String, Binding>) -> String {
+    if bindings.is_empty() {
+        "  (none)".to_string()
+    } else {
+        bindings
+            .keys()
+            .map(|k| format!("  {k}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -535,5 +650,207 @@ mod tests {
 
         let names: Vec<&str> = config.bindings.keys().map(String::as_str).collect();
         assert_eq!(names, ["alpha", "middle", "zebra"]);
+    }
+
+    // -- Effective settings resolution --------------------------------------
+
+    #[test]
+    fn effective_settings_all_defaults() {
+        let global = Settings::default();
+        let binding = Binding {
+            app: "com.example.app".into(),
+            cycle_when_focused: None,
+            launch_if_not_running: None,
+            focus_strategy: None,
+        };
+
+        let effective = EffectiveSettings::resolve(&global, &binding);
+        assert!(!effective.cycle_when_focused);
+        assert!(!effective.launch_if_not_running);
+        assert_eq!(effective.focus_strategy, FocusStrategy::RecentWindow);
+    }
+
+    #[test]
+    fn effective_settings_global_values_used() {
+        let global = Settings {
+            cycle_when_focused: true,
+            launch_if_not_running: true,
+            focus_strategy: FocusStrategy::RecentWindow,
+        };
+        let binding = Binding {
+            app: "com.example.app".into(),
+            cycle_when_focused: None,
+            launch_if_not_running: None,
+            focus_strategy: None,
+        };
+
+        let effective = EffectiveSettings::resolve(&global, &binding);
+        assert!(effective.cycle_when_focused);
+        assert!(effective.launch_if_not_running);
+    }
+
+    #[test]
+    fn effective_settings_per_binding_overrides_global() {
+        let global = Settings {
+            cycle_when_focused: true,
+            launch_if_not_running: true,
+            focus_strategy: FocusStrategy::RecentWindow,
+        };
+        let binding = Binding {
+            app: "com.example.app".into(),
+            cycle_when_focused: Some(false),
+            launch_if_not_running: Some(false),
+            focus_strategy: None,
+        };
+
+        let effective = EffectiveSettings::resolve(&global, &binding);
+        assert!(!effective.cycle_when_focused);
+        assert!(!effective.launch_if_not_running);
+        assert_eq!(effective.focus_strategy, FocusStrategy::RecentWindow);
+    }
+
+    #[test]
+    fn effective_settings_partial_overrides() {
+        let global = Settings {
+            cycle_when_focused: true,
+            launch_if_not_running: false,
+            focus_strategy: FocusStrategy::RecentWindow,
+        };
+        let binding = Binding {
+            app: "com.example.app".into(),
+            cycle_when_focused: None,
+            launch_if_not_running: Some(true),
+            focus_strategy: None,
+        };
+
+        let effective = EffectiveSettings::resolve(&global, &binding);
+        assert!(effective.cycle_when_focused); // from global
+        assert!(effective.launch_if_not_running); // from per-binding override
+    }
+
+    // -- Binding resolution -------------------------------------------------
+
+    #[test]
+    fn resolve_binding_found() {
+        let config = parse(
+            r#"
+            [settings]
+            cycle_when_focused = true
+
+            [bindings.terminal]
+            app = "com.mitchellh.ghostty"
+            "#,
+        )
+        .expect("should parse");
+
+        let path = PathBuf::from("/test/summon.toml");
+        let resolved = resolve_binding(&config, "terminal", &path).expect("should resolve");
+
+        assert_eq!(resolved.name, "terminal");
+        assert_eq!(resolved.app, "com.mitchellh.ghostty");
+        assert!(resolved.settings.cycle_when_focused);
+    }
+
+    #[test]
+    fn resolve_binding_not_found() {
+        let config = parse(
+            r#"
+            [bindings.browser]
+            app = "com.brave.Browser"
+
+            [bindings.editor]
+            app = "dev.zed.Zed"
+            "#,
+        )
+        .expect("should parse");
+
+        let path = PathBuf::from("/test/summon.toml");
+        let result = resolve_binding(&config, "terminal", &path);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Could not resolve binding: terminal"),
+            "error should mention binding name: {msg}"
+        );
+        assert!(
+            msg.contains("/test/summon.toml"),
+            "error should mention config path: {msg}"
+        );
+        assert!(
+            msg.contains("browser") && msg.contains("editor"),
+            "error should list available bindings: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_binding_not_found_empty_config() {
+        let config = parse("").expect("should parse empty config");
+        let path = PathBuf::from("/test/summon.toml");
+        let result = resolve_binding(&config, "anything", &path);
+
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("(none)"),
+            "error should indicate no bindings available: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_binding_inherits_per_binding_override() {
+        let config = parse(
+            r#"
+            [settings]
+            cycle_when_focused = true
+            launch_if_not_running = false
+
+            [bindings.editor]
+            app = "dev.zed.Zed"
+            launch_if_not_running = true
+            "#,
+        )
+        .expect("should parse");
+
+        let path = PathBuf::from("/test/summon.toml");
+        let resolved = resolve_binding(&config, "editor", &path).expect("should resolve");
+
+        assert!(resolved.settings.cycle_when_focused); // inherited from global
+        assert!(resolved.settings.launch_if_not_running); // overridden per-binding
+    }
+
+    // -- Available bindings formatting --------------------------------------
+
+    #[test]
+    fn format_available_multiple_bindings() {
+        let config = parse(
+            r#"
+            [bindings.browser]
+            app = "com.brave.Browser"
+
+            [bindings.terminal]
+            app = "com.mitchellh.ghostty"
+            "#,
+        )
+        .expect("should parse");
+
+        let output = format_available_bindings(&config.bindings);
+        assert!(output.contains("browser"));
+        assert!(output.contains("terminal"));
+        // BTreeMap gives sorted order
+        let browser_pos = output.find("browser").expect("should find browser");
+        let terminal_pos = output.find("terminal").expect("should find terminal");
+        assert!(
+            browser_pos < terminal_pos,
+            "browser should appear before terminal"
+        );
+    }
+
+    #[test]
+    fn format_available_empty_bindings() {
+        let bindings = BTreeMap::new();
+        let output = format_available_bindings(&bindings);
+        assert_eq!(output, "  (none)");
     }
 }

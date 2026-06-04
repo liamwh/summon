@@ -117,4 +117,4 @@ Summon works with any tool that can execute a command:
 
 ## License
 
-MIT
+Apache-2.0

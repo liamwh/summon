@@ -2,25 +2,24 @@
 
 ## Last updated
 
-- Commit: 61cf53e (pending new commit)
+- Commit: f849c8e (pending new commit)
 - Date: 2026-06-04
-- Agent task: Implement `summon list` command
+- Agent task: Implement binding lookup and effective settings resolution
 
 ## What changed in this iteration
 
-- Wired `Command::List` to new `run_list()` handler in `cli.rs`
-- `summon list` loads config, prints all bindings in aligned `name -> app` format
-- Empty config prints "No bindings configured." instead of nothing
-- Config load errors (missing file, invalid TOML) are reported clearly
-- Added 3 unit tests for list formatting: multi-binding alignment, single binding, empty config
-- Replaced the "not yet implemented" integration test for `list` with 2 real integration tests:
-  - `list_command_succeeds_with_config` — verifies output contains binding names and app targets
-  - `list_command_reports_missing_config` — verifies error when config is missing
+- Added `EffectiveSettings` struct with fully resolved boolean/enum values (no `Option` wrappers)
+- Added `EffectiveSettings::resolve()` that merges global `Settings` with per-binding overrides — per-binding `Some` values take precedence
+- Added `ResolvedBinding` struct combining binding name, app target string, and effective settings
+- Added `ResolveError` enum with `BindingNotFound` variant producing actionable error messages
+- Added `resolve_binding()` function: looks up a binding by name, computes effective settings, returns rich error with config path and available binding names when not found
+- Added `format_available_bindings()` helper for error message formatting
+- Added 10 unit tests: 4 for effective settings resolution, 4 for binding resolution, 2 for available bindings formatting
 
 ## Verification run
 
-- `cargo test -p summon --bin summon -- --test-threads=1` — 33 passed, 0 failed
-- `cargo test -p summon --test integration -- --test-threads=1` — 9 passed, 0 failed
+- `cargo test -p summon --bin summon` — 43 passed, 0 failed
+- `cargo test -p summon --test integration` — 9 passed, 0 failed
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean
 - `cargo fmt --all -- --check` — clean
 
@@ -30,6 +29,7 @@
   - Rust workspace with single `summon` crate
   - CLI definition via clap with all planned subcommands (8 parsing tests)
   - Config module with full TOML model, path resolution, parsing, validation (22 tests)
+  - Binding lookup and effective settings resolution (10 tests)
   - CLI dispatch: `summon config path`, `summon config check`, and `summon list` are wired and working
   - Unimplemented commands (`app`, `doctor`, `<binding>`) fail clearly with "not yet implemented"
   - Workspace lint configuration (clippy pedantic, missing_docs, unwrap/expect warnings)
@@ -39,7 +39,6 @@
 - Partially done:
   - None
 - Not done:
-  - Binding lookup and effective settings resolution
   - App target resolution (bundle ID, name, path classification)
   - Launch/focus/cycle decision logic
   - App controller trait/interface (fakeable macOS boundary)
@@ -52,7 +51,7 @@
 
 ## Next best task
 
-Implement binding lookup and effective settings resolution. This is the core domain logic that resolves a binding name to its app target and computes the effective settings (merging global defaults with per-binding overrides). It's prerequisite for `summon <binding>` to work and keeps macOS effects out of the picture while building testable pure logic.
+Implement app target resolution. Add an `AppTarget` enum that classifies the `app` field string as a bundle identifier, application name, or application path. This is the next domain logic piece needed before the decision layer can determine what macOS action to take. It's pure string classification logic, fully testable without macOS effects.
 
 ## Blockers / open questions
 
@@ -60,8 +59,8 @@ Implement binding lookup and effective settings resolution. This is the core dom
 
 ## Notes for next agent
 
-- `run()` in `cli.rs` is the single dispatch point for all commands. Add new command handlers there.
+- `resolve_binding()` in `config.rs` returns a `ResolvedBinding` with `name`, `app` (raw string), and `settings` (`EffectiveSettings`). The next step is to classify the `app` string into a typed `AppTarget`.
+- `EffectiveSettings::resolve()` handles the global/per-binding merge. Per-binding `Some(_)` values override global defaults; `None` falls through to global.
+- `ResolveError::BindingNotFound` produces formatted error messages with config path and available binding names.
+- `run()` in `cli.rs` is the single dispatch point for all commands.
 - Integration tests use `CARGO_BIN_EXE_summon` and set `XDG_CONFIG_HOME` to temp dirs for isolation.
-- The `Binding` struct uses `Option<bool>` / `Option<FocusStrategy>` for per-binding overrides. Effective settings resolution (merging global + per-binding) has not been implemented yet.
-- `BTreeMap` is used for bindings to ensure deterministic ordering (important for `summon list`).
-- `summon list` output format: `name -> app_target`, left-aligned to the longest binding name.
