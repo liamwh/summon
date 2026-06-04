@@ -1,6 +1,7 @@
 //! Summon — a tiny macOS command-line tool for opening, focusing,
 //! and cycling applications from declarative keybindings.
 
+pub mod app;
 mod cli;
 pub mod config;
 
