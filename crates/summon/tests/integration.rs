@@ -148,17 +148,39 @@ fn config_check_reports_invalid_config() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn unimplemented_app_command_fails() {
+fn app_command_succeeds_with_bundle_id() {
     let output = Command::new(summon_bin())
-        .args(["app", "Ghostty"])
+        .args(["app", "com.apple.finder"])
         .output()
         .expect("should run summon");
 
-    assert!(!output.status.success());
+    assert!(
+        output.status.success(),
+        "app command should succeed with Finder bundle ID: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn app_command_rejects_invalid_path() {
+    let output = Command::new(summon_bin())
+        .args(["app", "/Applications/notanapp"])
+        .output()
+        .expect("should run summon");
+
+    assert!(
+        !output.status.success(),
+        "app command should fail for invalid app path"
+    );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("not yet implemented"),
-        "should say not yet implemented: {stderr}"
+        stderr.contains("Invalid app target"),
+        "stderr should mention invalid app target: {stderr}"
+    );
+    assert!(
+        stderr.contains(".app"),
+        "stderr should mention .app extension: {stderr}"
     );
 }
 

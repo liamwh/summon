@@ -2,6 +2,7 @@
 
 use std::process::ExitCode;
 
+use crate::app;
 use crate::config;
 use crate::controller;
 use clap::Parser;
@@ -61,10 +62,7 @@ pub enum ConfigCommand {
 pub fn run(cli: Cli) -> ExitCode {
     match cli.command {
         Some(Command::Config { subcommand }) => run_config(subcommand),
-        Some(Command::App { .. }) => {
-            eprintln!("not yet implemented: summon app");
-            ExitCode::FAILURE
-        }
+        Some(Command::App { ref app }) => run_app(app),
         Some(Command::List) => run_list(),
         Some(Command::Doctor) => {
             eprintln!("not yet implemented: summon doctor");
@@ -159,6 +157,35 @@ fn run_config_check() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `summon app <app>` — summon an app directly by name, bundle ID, or path.
+///
+/// Classifies the app string, uses sensible defaults (launch if not running,
+/// no cycling), and runs the decide/execute cycle.
+fn run_app(app: &str) -> ExitCode {
+    let target = match app::classify_app_target(app) {
+        Ok(t) => t,
+        Err(err) => {
+            eprintln!("Invalid app target: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let settings = config::EffectiveSettings {
+        launch_if_not_running: true,
+        ..config::EffectiveSettings::default()
+    };
+
+    let ctrl = controller::MacAppController::new();
+    let action = controller::decide_action(&ctrl, &target, &settings);
+
+    if let Err(err) = controller::execute_action(&ctrl, &target, action) {
+        eprintln!("Failed to {action:?} {app}: {err}");
+        return ExitCode::FAILURE;
+    }
+
+    ExitCode::SUCCESS
 }
 
 /// `summon <binding>` — the core command path.
