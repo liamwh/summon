@@ -1,0 +1,16 @@
+[package]
+name = "summon"
+description = "A tiny macOS command-line tool for opening, focusing, and cycling applications from declarative keybindings."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["macos", "cli", "focus", "app-switcher", "accessibility"]
+categories = ["command-line-utilities", "os::macos-apis"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[lints]
+workspace = true
