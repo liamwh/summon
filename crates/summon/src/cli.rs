@@ -1,5 +1,8 @@
 //! Command-line interface for Summon.
 
+use std::process::ExitCode;
+
+use crate::config;
 use clap::Parser;
 
 /// Summon — open, focus, and cycle macOS apps from your keyboard.
@@ -37,13 +40,95 @@ pub enum Command {
 }
 
 /// Configuration subcommands.
-#[derive(Debug, clap::Subcommand)]
+#[derive(Debug, Clone, Copy, clap::Subcommand)]
 pub enum ConfigCommand {
     /// Print the active configuration file path.
     Path,
 
     /// Validate the configuration file and print any errors.
     Check,
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch
+// ---------------------------------------------------------------------------
+
+/// Runs the parsed CLI command.
+///
+/// Returns [`ExitCode::SUCCESS`] on success, [`ExitCode::FAILURE`] on error.
+/// Errors are printed to stderr.
+pub fn run(cli: Cli) -> ExitCode {
+    match cli.command {
+        Some(Command::Config { subcommand }) => run_config(subcommand),
+        Some(Command::App { .. }) => {
+            eprintln!("not yet implemented: summon app");
+            ExitCode::FAILURE
+        }
+        Some(Command::List) => {
+            eprintln!("not yet implemented: summon list");
+            ExitCode::FAILURE
+        }
+        Some(Command::Doctor) => {
+            eprintln!("not yet implemented: summon doctor");
+            ExitCode::FAILURE
+        }
+        None => {
+            if let Some(binding) = cli.binding {
+                eprintln!("not yet implemented: summon <binding> (binding: {binding})");
+                ExitCode::FAILURE
+            } else {
+                // No args — clap already printed help.
+                ExitCode::SUCCESS
+            }
+        }
+    }
+}
+
+/// Dispatches `summon config` subcommands.
+fn run_config(subcommand: ConfigCommand) -> ExitCode {
+    match subcommand {
+        ConfigCommand::Path => run_config_path(),
+        ConfigCommand::Check => run_config_check(),
+    }
+}
+
+/// `summon config path` — prints the active config file path.
+fn run_config_path() -> ExitCode {
+    match config::config_path() {
+        Ok(path) => {
+            println!("{}", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `summon config check` — validates the config file.
+fn run_config_check() -> ExitCode {
+    let path = match config::config_path() {
+        Ok(p) => p,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match config::load_from(&path) {
+        Ok(config) => {
+            let count = config.bindings.len();
+            println!("Config is valid: {}", path.display());
+            println!("  {count} binding(s) configured");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("Config error in {}:", path.display());
+            eprintln!("  {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]

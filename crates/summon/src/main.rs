@@ -6,6 +6,7 @@ pub mod config;
 
 use clap::Parser;
 
-fn main() {
-    let _cli = cli::Cli::parse();
+fn main() -> std::process::ExitCode {
+    let cli = cli::Cli::parse();
+    cli::run(cli)
 }
