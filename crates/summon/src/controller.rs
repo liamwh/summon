@@ -230,11 +230,7 @@ impl AppController for FakeAppController {
 ///
 /// This controller uses the macOS `open` command for launching and focusing
 /// apps, and AppleScript via `osascript` for querying app state (running,
-/// frontmost).
-///
-/// For v1, [`cycle_window`](AppController::cycle_window) is a no-op. Window
-/// cycling requires the macOS Accessibility API and will be implemented in a
-/// future version.
+/// frontmost) and cycling windows through the macOS Accessibility API.
 pub struct MacAppController;
 
 impl MacAppController {
@@ -307,6 +303,25 @@ impl MacAppController {
             None
         }
     }
+
+    /// Builds an AppleScript process reference for the given [`AppTarget`].
+    ///
+    /// For bundle identifiers, uses `first process whose bundle identifier is`
+    /// to look up the process. For app names and paths, uses `process "Name"`.
+    fn process_ref_script(target: &AppTarget) -> String {
+        match target {
+            AppTarget::BundleId(id) => {
+                format!("first process whose bundle identifier is \"{id}\"")
+            }
+            AppTarget::AppName(name) => {
+                format!("process \"{name}\"")
+            }
+            AppTarget::AppPath(path) => {
+                let name = Self::app_name_from_path(path).unwrap_or(path);
+                format!("process \"{name}\"")
+            }
+        }
+    }
 }
 
 impl Default for MacAppController {
@@ -365,9 +380,28 @@ impl AppController for MacAppController {
         self.launch(target)
     }
 
-    fn cycle_window(&self, _target: &AppTarget) -> Result<(), String> {
-        // Window cycling is not yet implemented. Do nothing successfully so
-        // that cycle_when_focused=true degrades gracefully in v1.
+    fn cycle_window(&self, target: &AppTarget) -> Result<(), String> {
+        let process_ref = Self::process_ref_script(target);
+        let script = format!(
+            "tell application \"System Events\"\n\
+             \ttell {process_ref}\n\
+             \t\tif (count of windows) >= 2 then\n\
+             \t\t\tset index of window 2 to 1\n\
+             \t\tend if\n\
+             \tend tell\n\
+             end tell"
+        );
+
+        let output = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .map_err(|e| format!("Failed to run osascript for window cycling: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format_cycle_error(stderr.trim()));
+        }
+
         Ok(())
     }
 }
@@ -384,6 +418,20 @@ fn format_app_error(target: &AppTarget, stderr: &str) -> String {
         AppTarget::AppPath(path) => {
             format!("Could not open app at \"{path}\": {stderr}")
         }
+    }
+}
+
+/// Formats an error from the window cycling AppleScript.
+fn format_cycle_error(stderr: &str) -> String {
+    let lower = stderr.to_ascii_lowercase();
+    if lower.contains("not allowed") || lower.contains("not authorized") {
+        "Summon needs Accessibility permission to cycle windows.\n\
+         Open:\n\
+         \tSystem Settings \u{2192} Privacy & Security \u{2192} Accessibility\n\
+         Then enable the terminal, launcher, or hotkey daemon that invokes Summon."
+            .to_string()
+    } else {
+        format!("Could not cycle windows: {stderr}")
     }
 }
 
@@ -711,13 +759,89 @@ mod tests {
         assert!(msg.contains("does not exist"), "should contain stderr");
     }
 
-    // -- MacAppController cycle_window is no-op --------------------------------
+    // -- MacAppController cycle_window ----------------------------------------
 
     #[test]
-    fn mac_controller_cycle_is_noop() {
+    fn mac_controller_cycle_runs_without_panic() {
+        // Finder is always running on macOS. The cycle may succeed, fail with
+        // an accessibility error, or fail with a System Events connection error
+        // depending on the test environment. We verify only that the method
+        // runs without panicking and returns a well-typed result.
         let controller = super::MacAppController::new();
         let target = finder();
-        let result = controller.cycle_window(&target);
-        assert!(result.is_ok());
+        let _result = controller.cycle_window(&target);
+    }
+
+    // -- process_ref_script ----------------------------------------------------
+
+    #[test]
+    fn process_ref_bundle_id() {
+        let target = AppTarget::BundleId("com.apple.finder".into());
+        let script = super::MacAppController::process_ref_script(&target);
+        assert_eq!(
+            script,
+            "first process whose bundle identifier is \"com.apple.finder\""
+        );
+    }
+
+    #[test]
+    fn process_ref_app_name() {
+        let target = AppTarget::AppName("Preview".into());
+        let script = super::MacAppController::process_ref_script(&target);
+        assert_eq!(script, "process \"Preview\"");
+    }
+
+    #[test]
+    fn process_ref_app_path() {
+        let target = AppTarget::AppPath("/Applications/Safari.app".into());
+        let script = super::MacAppController::process_ref_script(&target);
+        assert_eq!(script, "process \"Safari\"");
+    }
+
+    #[test]
+    fn process_ref_app_path_with_spaces() {
+        let target = AppTarget::AppPath("/Applications/Visual Studio Code.app".into());
+        let script = super::MacAppController::process_ref_script(&target);
+        assert_eq!(script, "process \"Visual Studio Code\"");
+    }
+
+    // -- format_cycle_error ----------------------------------------------------
+
+    #[test]
+    fn format_cycle_error_accessibility_denied() {
+        // macOS returns "Not allowed" with capital N.
+        let msg = super::format_cycle_error(
+            "System Events got an error: Not allowed to send keystrokes.",
+        );
+        assert!(
+            msg.contains("Accessibility permission"),
+            "should mention accessibility: {msg}"
+        );
+        assert!(
+            msg.contains("Privacy & Security"),
+            "should mention settings path: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_cycle_error_not_authorized() {
+        let msg = super::format_cycle_error("osascript is Not authorized to do stuff");
+        assert!(
+            msg.contains("Accessibility permission"),
+            "should mention accessibility: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_cycle_error_generic() {
+        let msg = super::format_cycle_error("Some unknown error");
+        assert!(
+            msg.contains("Could not cycle windows"),
+            "should mention cycling: {msg}"
+        );
+        assert!(
+            msg.contains("Some unknown error"),
+            "should include original error: {msg}"
+        );
     }
 }
