@@ -2,11 +2,11 @@
 
 use std::process::ExitCode;
 
-use crate::app;
-use crate::config;
-use crate::controller;
-use crate::diagnostics;
 use clap::Parser;
+use summon::app;
+use summon::config;
+use summon::controller;
+use summon::diagnostics;
 
 /// Summon — open, focus, and cycle macOS apps from your keyboard.
 #[derive(Debug, Parser)]

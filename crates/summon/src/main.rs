@@ -1,13 +1,8 @@
-//! Summon — a tiny macOS command-line tool for opening, focusing,
-//! and cycling applications from declarative keybindings.
-
-pub mod app;
-mod cli;
-pub mod config;
-pub mod controller;
-pub mod diagnostics;
+//! Summon binary entry point.
 
 use clap::Parser;
+
+mod cli;
 
 fn main() -> std::process::ExitCode {
     let cli = cli::Cli::parse();
