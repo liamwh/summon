@@ -1,13 +1,13 @@
 #!/bin/bash
-# Summon Terminal — Raycast Script Command
+# Summon Notion — Raycast Script Command
 #
 # Install: copy to ~/.config/raycast/scripts/ (or your Raycast scripts directory)
 # Requires: summon in PATH
 #
 # @raycast.schemaVersion 1
-# @raycast.title Summon Terminal
+# @raycast.title Summon Notion
 # @raycast.mode silent
-# @raycast.description Open or focus Terminal via Summon
+# @raycast.description Open or focus Notion via Summon
 
 export PATH="$HOME/bin:$PATH"
-summon terminal
+summon notion

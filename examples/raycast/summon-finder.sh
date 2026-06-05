@@ -9,4 +9,5 @@
 # @raycast.mode silent
 # @raycast.description Open or focus Finder via Summon
 
+export PATH="$HOME/bin:$PATH"
 summon finder

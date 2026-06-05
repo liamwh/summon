@@ -7,6 +7,7 @@
 # @raycast.schemaVersion 1
 # @raycast.title Summon Editor
 # @raycast.mode silent
-# @raycast.description Open or focus the editor via Summon
+# @raycast.description Open or focus Editor via Summon
 
+export PATH="$HOME/bin:$PATH"
 summon editor

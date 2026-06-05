@@ -7,6 +7,7 @@
 # @raycast.schemaVersion 1
 # @raycast.title Summon Browser
 # @raycast.mode silent
-# @raycast.description Open or focus the browser via Summon
+# @raycast.description Open or focus Browser via Summon
 
+export PATH="$HOME/bin:$PATH"
 summon browser
