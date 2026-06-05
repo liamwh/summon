@@ -2,22 +2,25 @@
 
 ## Last updated
 
-- Commit: e0fb725 (pending new commit)
+- Commit: 40849bb (pending new commit)
 - Date: 2026-06-05
-- Agent task: Fix `summon` no-args UX — print help instead of silently exiting
+- Agent task: Gate slow macOS smoke test behind `#[ignore]` to keep unit test suite fast
 
 ## What changed in this iteration
 
-- Fixed `summon` with no arguments to print usage help (matches `git`, `cargo`, `rg` convention)
-- Previously exited 0 with no output; now prints clap help text
-- Updated test name and comment to accurately describe the behavior
+- Marked `mac_controller_cycle_runs_without_panic` with `#[ignore]` — it calls real AppleScript and takes ~60s on timeout
+- Unit test suite (`cargo test --lib`) now completes in ~0.01s instead of ~120s
+- The test can still be run explicitly with `cargo test --lib -- --ignored mac_controller_cycle`
+- Added inline comment documenting how to run the ignored test
 
 ## Verification run
 
-- `cargo test --workspace` — 122 library + 11 binary + 14 integration + 1 doc test = 148 passed
+- `cargo test --workspace --lib` — 121 passed, 1 ignored (0.01s)
+- `cargo test --workspace --bin summon` — 11 passed
+- `cargo test --workspace --doc` — 1 passed
+- `cargo test --lib -- --ignored mac_controller_cycle` — 1 passed (macOS smoke test works when explicitly run)
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean
 - `cargo fmt --all -- --check` — clean
-- `summon` (no args) — prints help, exits 0
 
 ## Current state reconstructed from git
 
@@ -42,6 +45,7 @@
   - Release workflow (GitHub Actions, aarch64 + x86_64)
   - Homebrew formula (SHA-256 placeholder pending first release)
   - Library/binary crate split with doc tests
+  - macOS smoke test gated behind `#[ignore]` for fast unit test feedback
 - Partially done: None
 - Not done: None (future items: JSON output, shell completions, Nix package, config wizard)
 
@@ -67,3 +71,4 @@ Then update `packaging/summon.rb` with the real SHA-256 from the release artifac
 - The Homebrew formula at `packaging/summon.rb` has a placeholder SHA-256 that must be replaced after the first release is published
 - The target directory is configured on an external SSD via CARGO_TARGET_DIR or .cargo/config.toml
 - Integration tests that interact with real macOS apps (Finder launch, Accessibility checks) are slow (~2 min total) because they wait for AppleScript timeouts
+- The macOS Accessibility smoke test (`mac_controller_cycle_runs_without_panic`) is `#[ignore]`d — run with `--ignored` flag when needed

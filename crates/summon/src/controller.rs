@@ -761,7 +761,11 @@ mod tests {
 
     // -- MacAppController cycle_window ----------------------------------------
 
+    // This test calls real macOS Accessibility APIs and can take ~60 seconds
+    // when Accessibility permissions are not granted (AppleScript timeout).
+    // Run manually with: cargo test -p summon --lib -- --ignored mac_controller_cycle
     #[test]
+    #[ignore]
     fn mac_controller_cycle_runs_without_panic() {
         // Finder is always running on macOS. The cycle may succeed, fail with
         // an accessibility error, or fail with a System Events connection error
