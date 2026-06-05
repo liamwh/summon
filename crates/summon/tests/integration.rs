@@ -144,7 +144,7 @@ fn config_check_reports_invalid_config() {
 }
 
 // ---------------------------------------------------------------------------
-// Unimplemented commands
+// App, list, doctor, and binding command tests
 // ---------------------------------------------------------------------------
 
 #[test]
