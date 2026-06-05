@@ -2,7 +2,7 @@
 
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use summon::app;
 use summon::config;
 use summon::controller;
@@ -70,7 +70,8 @@ pub fn run(cli: Cli) -> ExitCode {
             if let Some(binding) = cli.binding {
                 run_binding(&binding)
             } else {
-                // No args — clap already printed help.
+                // No args — print help so new users see usage information.
+                let _ = Cli::command().print_help();
                 ExitCode::SUCCESS
             }
         }
@@ -312,8 +313,8 @@ mod tests {
     }
 
     #[test]
-    fn reject_no_args_when_binding_expected_context() {
-        // No args is valid — it just prints help.
+    fn no_args_parses_successfully_and_run_prints_help() {
+        // Parsing succeeds (no required args), but run() prints help.
         let cli = Cli::try_parse_from(["summon"]).expect("should parse");
         assert!(cli.binding.is_none());
         assert!(cli.command.is_none());

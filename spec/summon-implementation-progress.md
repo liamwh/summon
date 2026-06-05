@@ -2,23 +2,22 @@
 
 ## Last updated
 
-- Commit: 27932ff (lib.rs + main.rs split)
+- Commit: e0fb725 (pending new commit)
 - Date: 2026-06-05
-- Agent task: Completion audit — fix stale comment in integration tests
+- Agent task: Fix `summon` no-args UX — print help instead of silently exiting
 
 ## What changed in this iteration
 
-- Fixed stale "Unimplemented commands" section header in `integration.rs`
-  (all commands are implemented; header now reads accurately)
+- Fixed `summon` with no arguments to print usage help (matches `git`, `cargo`, `rg` convention)
+- Previously exited 0 with no output; now prints clap help text
+- Updated test name and comment to accurately describe the behavior
 
 ## Verification run
 
 - `cargo test --workspace` — 122 library + 11 binary + 14 integration + 1 doc test = 148 passed
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean
 - `cargo fmt --all -- --check` — clean
-- `cargo build --release` — builds 752 KB binary
-- `summon --help` / `summon --version` — correct output
-- No TODO/FIXME/todo!/unimplemented! markers found in Rust source
+- `summon` (no args) — prints help, exits 0
 
 ## Current state reconstructed from git
 
@@ -37,6 +36,7 @@
   - Focus via `open` (brings app to foreground)
   - Window cycling via macOS Accessibility API (AppleScript)
   - Clear errors for missing config, missing bindings, invalid targets, permission issues
+  - `summon` with no args prints usage help
   - Example configs: summon.toml, skhdrc, Raycast scripts, shell aliases
   - CI pipeline (format, clippy, test)
   - Release workflow (GitHub Actions, aarch64 + x86_64)
