@@ -12,6 +12,10 @@ use summon::diagnostics;
 #[derive(Debug, Parser)]
 #[command(name = "summon", version, about)]
 pub struct Cli {
+    /// Increase diagnostic output (-v for decision, -vv for backend context).
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    pub verbose: u8,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 
@@ -39,7 +43,14 @@ pub enum Command {
     },
 
     /// Check whether Summon has the macOS permissions it needs.
-    Doctor,
+    Doctor {
+        /// Request the macOS Accessibility permission prompt if not trusted.
+        #[arg(long)]
+        request_accessibility: bool,
+
+        /// Optional app target to inspect.
+        app: Option<String>,
+    },
 }
 
 /// Configuration subcommands.
@@ -61,14 +72,18 @@ pub enum ConfigCommand {
 /// Returns [`ExitCode::SUCCESS`] on success, [`ExitCode::FAILURE`] on error.
 /// Errors are printed to stderr.
 pub fn run(cli: Cli) -> ExitCode {
+    let verbose = cli.verbose;
     match cli.command {
         Some(Command::Config { subcommand }) => run_config(subcommand),
-        Some(Command::App { ref app }) => run_app(app),
+        Some(Command::App { ref app }) => run_app(app, verbose),
         Some(Command::List) => run_list(),
-        Some(Command::Doctor) => run_doctor(),
+        Some(Command::Doctor {
+            request_accessibility,
+            ref app,
+        }) => run_doctor(request_accessibility, app.as_deref()),
         None => {
             if let Some(binding) = cli.binding {
-                run_binding(&binding)
+                run_binding(&binding, verbose)
             } else {
                 // No args — print help so new users see usage information.
                 let _ = Cli::command().print_help();
@@ -162,7 +177,7 @@ fn run_config_check() -> ExitCode {
 ///
 /// Classifies the app string, uses sensible defaults (launch if not running,
 /// no cycling), and runs the decide/execute cycle.
-fn run_app(app: &str) -> ExitCode {
+fn run_app(app: &str, verbose: u8) -> ExitCode {
     let target = match app::classify_app_target(app) {
         Ok(t) => t,
         Err(err) => {
@@ -177,7 +192,8 @@ fn run_app(app: &str) -> ExitCode {
     };
 
     let ctrl = controller::MacAppController::new();
-    let action = controller::decide_action(&ctrl, &target, &settings);
+    let (action, context) = controller::decide_action(&ctrl, &target, &settings);
+    print_decision(verbose, app, &target, action, context);
 
     if let Err(err) = controller::execute_action(&ctrl, &target, action) {
         eprintln!("Failed to {action:?} {app}: {err}");
@@ -190,7 +206,7 @@ fn run_app(app: &str) -> ExitCode {
 /// `summon <binding>` — the core command path.
 ///
 /// Loads config, resolves the binding, decides the action, and executes it.
-fn run_binding(name: &str) -> ExitCode {
+fn run_binding(name: &str, verbose: u8) -> ExitCode {
     let path = match config::config_path() {
         Ok(p) => p,
         Err(err) => {
@@ -218,7 +234,9 @@ fn run_binding(name: &str) -> ExitCode {
 
     let controller = controller::MacAppController::new();
 
-    let action = controller::decide_action(&controller, &resolved.target, &resolved.settings);
+    let (action, context) =
+        controller::decide_action(&controller, &resolved.target, &resolved.settings);
+    print_decision(verbose, &resolved.name, &resolved.target, action, context);
 
     if let Err(err) = controller::execute_action(&controller, &resolved.target, action) {
         eprintln!("Failed to {action:?} {}: {err}", resolved.name);
@@ -229,10 +247,23 @@ fn run_binding(name: &str) -> ExitCode {
 }
 
 /// `summon doctor` — runs diagnostic checks.
-fn run_doctor() -> ExitCode {
+fn run_doctor(request_accessibility: bool, app: Option<&str>) -> ExitCode {
     println!("Summon doctor");
     println!();
-    let result = diagnostics::run_doctor();
+    let target = match app {
+        Some(app) => match app::classify_app_target(app) {
+            Ok(target) => Some(target),
+            Err(err) => {
+                eprintln!("Invalid app target: {err}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
+    let result = diagnostics::run_doctor(diagnostics::DoctorOptions {
+        request_accessibility,
+        target: target.as_ref(),
+    });
     println!();
     println!(
         "{} check(s): {} passed, {} warning(s), {} failed",
@@ -245,6 +276,30 @@ fn run_doctor() -> ExitCode {
     } else {
         eprintln!("Some checks failed. See above for details.");
         ExitCode::FAILURE
+    }
+}
+
+fn print_decision(
+    verbose: u8,
+    label: &str,
+    target: &app::AppTarget,
+    action: controller::AppAction,
+    context: controller::DecisionContext,
+) {
+    if verbose == 0 {
+        return;
+    }
+
+    eprintln!(
+        "summon {label}: running={} frontmost={:?} launch={} cycle={} -> {action:?}",
+        context.is_running,
+        context.frontmost,
+        context.launch_when_missing,
+        context.cycle_when_focused
+    );
+
+    if verbose > 1 {
+        eprintln!("  target={}", controller::target_display(target));
     }
 }
 
@@ -302,7 +357,39 @@ mod tests {
     #[test]
     fn parse_doctor() {
         let cli = Cli::try_parse_from(["summon", "doctor"]).expect("should parse");
-        assert!(matches!(cli.command, Some(Command::Doctor)));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Doctor {
+                request_accessibility: false,
+                app: None
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_doctor_with_target_and_request_accessibility() {
+        let cli =
+            Cli::try_parse_from(["summon", "doctor", "--request-accessibility", "dev.zed.Zed"])
+                .expect("should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Doctor {
+                request_accessibility: true,
+                app: Some(_)
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_verbose_short() {
+        let cli = Cli::try_parse_from(["summon", "-v", "terminal"]).expect("should parse");
+        assert_eq!(cli.verbose, 1);
+    }
+
+    #[test]
+    fn parse_verbose_double() {
+        let cli = Cli::try_parse_from(["summon", "-vv", "terminal"]).expect("should parse");
+        assert_eq!(cli.verbose, 2);
     }
 
     #[test]

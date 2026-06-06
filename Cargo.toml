@@ -16,6 +16,7 @@ panic = "abort"
 
 [workspace.lints.rust]
 missing_docs = { level = "warn", priority = 1 } # KEEP THIS AT WARN, DO NOT CHANGE TO ALLOW
+unexpected_cfgs = { level = "allow", priority = 2 }
 
 [workspace.lints.clippy]
 unwrap_used = "deny" # Allow in tests with #![cfg_attr(test, allow(clippy::unwrap_used))]

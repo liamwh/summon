@@ -8,6 +8,20 @@ use std::path::{Path, PathBuf};
 
 use crate::app::{self, AppTarget};
 use crate::config;
+use crate::controller::{
+    self, current_process_info, grandparent_process_info, parent_process_info, AppStateProbe,
+    MacAppStateProbe,
+};
+
+use accessibility::attribute::AXUIElementAttributes;
+use accessibility::ui_element::AXUIElement;
+use accessibility_sys::{
+    kAXTrustedCheckOptionPrompt, AXAPIEnabled, AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
+};
+use core_foundation::base::TCFType;
+use core_foundation::boolean::CFBoolean;
+use core_foundation::dictionary::CFDictionary;
+use core_foundation::string::CFString;
 
 // ---------------------------------------------------------------------------
 // Doctor result
@@ -75,6 +89,15 @@ impl Default for DoctorResult {
 // Doctor checks
 // ---------------------------------------------------------------------------
 
+/// Options for `summon doctor`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DoctorOptions<'a> {
+    /// Request the macOS Accessibility permission prompt if not trusted.
+    pub request_accessibility: bool,
+    /// Optional app target to inspect.
+    pub target: Option<&'a AppTarget>,
+}
+
 /// Runs all diagnostic checks and returns the result.
 ///
 /// Checks:
@@ -85,7 +108,7 @@ impl Default for DoctorResult {
 /// 4. Each binding has a valid app target.
 /// 5. App path targets point to existing files (warning if missing).
 /// 6. macOS Accessibility permission status.
-pub fn run_doctor() -> DoctorResult {
+pub fn run_doctor(options: DoctorOptions<'_>) -> DoctorResult {
     let mut result = DoctorResult::new();
 
     let config_path = check_config_path(&mut result);
@@ -96,7 +119,8 @@ pub fn run_doctor() -> DoctorResult {
         check_bindings(config, &mut result);
     }
 
-    check_accessibility_permission(&mut result);
+    check_accessibility_permission(options.request_accessibility, &mut result);
+    check_accessibility_smoke(options.target, &mut result);
 
     result
 }
@@ -203,44 +227,175 @@ fn format_target_label(target: &AppTarget) -> String {
     }
 }
 
-/// Checks macOS Accessibility permission by attempting an AppleScript query.
+/// Checks macOS Accessibility permission for the current process.
 ///
 /// Reports a failure only when the permission is definitively denied.
 /// Timeouts and other errors are reported as warnings so they don't fail
 /// the overall `summon doctor` run in CI or headless environments.
-pub(crate) fn check_accessibility_permission(result: &mut DoctorResult) {
-    let script = "tell application \"System Events\" to get name of first process";
-    let output = std::process::Command::new("osascript")
-        .args(["-e", script])
-        .output();
+pub(crate) fn check_accessibility_permission(
+    request_accessibility: bool,
+    result: &mut DoctorResult,
+) {
+    println!(
+        "  Current executable: {}",
+        std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    );
+    print_process("Current process", current_process_info());
+    print_process("Parent process", parent_process_info());
+    print_process("Grandparent process", grandparent_process_info());
 
-    match output {
-        Ok(out) if out.status.success() => {
-            println!("  Accessibility: granted");
+    let trusted = if request_accessibility {
+        ax_is_process_trusted_with_prompt()
+    } else {
+        ax_is_process_trusted()
+    };
+
+    if trusted {
+        println!("  Accessibility (AXIsProcessTrusted): granted");
+        result.pass();
+    } else {
+        println!("  Accessibility (AXIsProcessTrusted): denied");
+        println!("    AXIsProcessTrusted checks the current process, not an arbitrary parent.");
+        println!(
+            "    Likely process to enable: {}",
+            likely_accessibility_process()
+        );
+        println!("    Open: System Settings -> Privacy & Security -> Accessibility");
+        result.fail();
+    }
+}
+
+fn check_accessibility_smoke(target: Option<&AppTarget>, result: &mut DoctorResult) {
+    if ax_api_enabled() {
+        println!("  Accessibility API enabled: yes");
+        result.pass();
+    } else {
+        println!("  Accessibility API enabled: no");
+        result.fail();
+    }
+
+    let system = AXUIElement::system_wide();
+
+    match system.attribute(&accessibility::attribute::AXAttribute::new(
+        &CFString::from_static_string("AXFocusedApplication"),
+    )) {
+        Ok(_app) => {
+            println!("  Frontmost application AX: readable");
             result.pass();
         }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.contains("not allowed") || stderr.contains("not authorized") {
-                println!("  Accessibility: denied");
-                println!("    Summon needs Accessibility permission to focus application windows.");
-                println!("    Open:");
-                println!("      System Settings → Privacy & Security → Accessibility");
-                println!(
-                    "    Then enable the terminal, launcher, or hotkey daemon that invokes Summon."
-                );
+        Err(err) => {
+            let message = err.to_string();
+            if message.contains("APIDisabled") || message.contains("API disabled") {
+                println!("  Frontmost application AX: failed with APIDisabled");
                 result.fail();
             } else {
-                // Timeouts and other errors are not definitive permission failures.
-                println!("  Accessibility: could not verify — {}", stderr.trim());
+                println!("  Frontmost application AX: could not read — {err}");
                 result.warn();
             }
         }
+    }
+
+    if let Some(target) = target {
+        check_target_windows(target, result);
+    } else {
+        check_finder_windows(result);
+    }
+}
+
+fn check_target_windows(target: &AppTarget, result: &mut DoctorResult) {
+    let probe = MacAppStateProbe::new();
+    match probe.pid_for_target(target) {
+        Ok(pid) => {
+            println!(
+                "  {} process: found pid {pid}",
+                controller::target_display(target)
+            );
+            result.pass();
+            check_windows_for_pid(&controller::target_display(target), pid, result);
+        }
         Err(err) => {
-            println!("  Accessibility: could not check — {err}");
+            println!("  {} process: {err}", controller::target_display(target));
+            result.fail();
+        }
+    }
+}
+
+fn check_finder_windows(result: &mut DoctorResult) {
+    check_windows_for_bundle_id("Finder", "com.apple.finder", result);
+}
+
+fn check_windows_for_bundle_id(label: &str, bundle_id: &str, result: &mut DoctorResult) {
+    let probe = MacAppStateProbe::new();
+    let target = AppTarget::BundleId(bundle_id.to_string());
+    match probe.pid_for_target(&target) {
+        Ok(pid) => check_windows_for_pid(label, pid, result),
+        Err(err) => {
+            println!("  {label} AX windows: skipped — {err}");
             result.warn();
         }
     }
+}
+
+fn check_windows_for_pid(label: &str, pid: i32, result: &mut DoctorResult) {
+    let app = AXUIElement::application(pid);
+
+    match app.windows() {
+        Ok(windows) => {
+            println!("  {label} AX windows: {} reported", windows.len());
+            if let Ok(window) = app.focused_window() {
+                let title = window
+                    .title()
+                    .map(|title| title.to_string())
+                    .unwrap_or_else(|_| "untitled".to_string());
+                println!("  {label} current window: {title}");
+            }
+            result.pass();
+        }
+        Err(err) => {
+            let message = err.to_string();
+            if message.contains("APIDisabled") || message.contains("API disabled") {
+                println!("  {label} AX windows: failed with APIDisabled");
+                result.fail();
+            } else {
+                println!("  {label} AX windows: could not enumerate — {err}");
+                result.warn();
+            }
+        }
+    }
+}
+
+fn print_process(label: &str, info: Option<controller::ProcessInfo>) {
+    match info {
+        Some(info) => println!("  {label}: {} (pid {})", info.name, info.pid),
+        None => println!("  {label}: unknown"),
+    }
+}
+
+fn likely_accessibility_process() -> String {
+    parent_process_info()
+        .map(|info| info.name)
+        .unwrap_or_else(|| "the terminal, launcher, or hotkey daemon that invokes summon".into())
+}
+
+fn ax_api_enabled() -> bool {
+    // SAFETY: `AXAPIEnabled` has no preconditions.
+    unsafe { AXAPIEnabled() }
+}
+
+fn ax_is_process_trusted() -> bool {
+    // SAFETY: `AXIsProcessTrusted` has no preconditions.
+    unsafe { AXIsProcessTrusted() }
+}
+
+fn ax_is_process_trusted_with_prompt() -> bool {
+    let key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
+    let value = CFBoolean::true_value();
+    let options = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), value.as_CFType())]);
+    // SAFETY: The dictionary keys and values are valid CoreFoundation objects
+    // for the lifetime of the call.
+    unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) }
 }
 
 /// Expands `~` at the start of a path to the home directory.

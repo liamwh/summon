@@ -33,8 +33,8 @@ install:
     @mkdir -p ~/bin/.summon-backups
     @if [ -f ~/bin/summon ]; then \
         backup=~/bin/.summon-backups/summon.$(date +%Y%m%d-%H%M%S); \
-        echo "💾 Backing up existing summon to $$backup"; \
-        cp ~/bin/summon "$$backup"; \
+        echo "💾 Backing up existing summon to $backup"; \
+        cp ~/bin/summon "$backup"; \
     fi
     @cp target/release/summon ~/bin/summon
     @echo "🔐 Code signing binary for macOS..."

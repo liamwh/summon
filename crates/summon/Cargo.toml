@@ -10,7 +10,12 @@ keywords = ["macos", "cli", "focus", "app-switcher", "accessibility"]
 categories = ["command-line-utilities", "os::macos-apis"]
 
 [dependencies]
+accessibility = "0.2"
+accessibility-sys = "0.2"
 clap = { version = "4", features = ["derive"] }
+core-foundation = "0.10"
+libc = "0.2"
+objc = "0.2"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 toml = "0.8"

@@ -148,15 +148,21 @@ fn config_check_reports_invalid_config() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn app_command_succeeds_with_bundle_id() {
+fn app_command_reports_missing_bundle_id() {
     let output = Command::new(summon_bin())
-        .args(["app", "com.apple.finder"])
+        .args(["app", "com.example.summon-missing-test-app"])
         .output()
         .expect("should run summon");
 
     assert!(
-        output.status.success(),
-        "app command should succeed with Finder bundle ID: stderr={}",
+        !output.status.success(),
+        "app command should fail for a missing bundle ID"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Could not launch com.example.summon-missing-test-app"),
+        "stderr should mention launch failure: stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -278,7 +284,7 @@ fn doctor_command_runs_diagnostics() {
         "should print config path: {stdout}"
     );
     assert!(
-        stdout.contains("Accessibility:"),
+        stdout.contains("Accessibility (AXIsProcessTrusted):"),
         "should check accessibility: {stdout}"
     );
 
@@ -322,7 +328,7 @@ fn binding_command_succeeds_with_valid_config() {
 
     std::fs::write(
         summon_dir.join("summon.toml"),
-        "[settings]\nlaunch_if_not_running = true\n\n[bindings.finder]\napp = \"com.apple.finder\"\n",
+        "[settings]\nlaunch_if_not_running = false\n\n[bindings.finder]\napp = \"com.apple.finder\"\n",
     )
     .unwrap();
 
