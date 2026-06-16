@@ -10,4 +10,4 @@
 # @raycast.description Open or focus Finder via Summon
 
 export PATH="$HOME/bin:$PATH"
-summon finder
+/Users/liam/bin/summon -vv finder >> /tmp/summon-raycast.log 2>&1

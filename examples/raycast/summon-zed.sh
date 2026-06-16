@@ -10,4 +10,4 @@
 # @raycast.description Open or focus Zed via Summon
 
 export PATH="$HOME/bin:$PATH"
-summon zed
+/Users/liam/bin/summon -vv zed >> /tmp/summon-raycast.log 2>&1
