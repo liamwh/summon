@@ -4,4 +4,6 @@
 pub mod app;
 pub mod config;
 pub mod controller;
+pub mod daemon;
 pub mod diagnostics;
+pub mod runner;

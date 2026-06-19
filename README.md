@@ -30,6 +30,9 @@ Summon is designed to be fast, boring, and easy to keep in your dotfiles.
 
 ```sh
 cargo install summon
+
+# from source, install to ~/bin and start the warm daemon path
+just install
 ```
 
 ## Quick Start
@@ -68,7 +71,12 @@ summon list             # List all configured bindings
 summon config path      # Print the active config file path
 summon config check     # Validate the config file
 summon doctor           # Check macOS permissions
+summon daemon status    # Inspect the optional warm daemon
 ```
+
+By default, `summon` will try the daemon first and fall back to direct mode if
+the socket is unavailable. Set `SUMMON_DAEMON=off` to force direct mode, or
+`SUMMON_DAEMON=required` to require the daemon.
 
 ## Configuration
 
@@ -104,6 +112,11 @@ app = "/Applications/My App.app"  # Path
 4. If already focused and `cycle_when_focused` is enabled — cycle to the next window
 
 This makes repeated keypresses useful rather than redundant.
+
+For the snappiest hot path, `just install` restarts a background daemon that
+caches config and handles repeated invocations over a Unix socket. That keeps
+keypresses off the cold CLI startup path while still preserving a direct-mode
+fallback.
 
 ## Integrations
 

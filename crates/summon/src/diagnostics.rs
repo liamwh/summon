@@ -9,14 +9,14 @@ use std::path::{Path, PathBuf};
 use crate::app::{self, AppTarget};
 use crate::config;
 use crate::controller::{
-    self, current_process_info, grandparent_process_info, parent_process_info, AppStateProbe,
-    MacAppStateProbe,
+    self, AppStateProbe, MacAppStateProbe, current_process_info, grandparent_process_info,
+    parent_process_info,
 };
 
 use accessibility::attribute::AXUIElementAttributes;
 use accessibility::ui_element::AXUIElement;
 use accessibility_sys::{
-    kAXTrustedCheckOptionPrompt, AXAPIEnabled, AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
+    AXAPIEnabled, AXIsProcessTrusted, AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt,
 };
 use core_foundation::base::TCFType;
 use core_foundation::boolean::CFBoolean;

@@ -28,6 +28,8 @@ format:
 install:
     @echo "📦 Building summon binary..."
     cargo build --release -q --target-dir target
+    @echo "🛑 Stopping existing summon daemon..."
+    @~/bin/summon daemon stop >/dev/null 2>&1 || true
     @echo "📥 Installing to ~/bin..."
     @mkdir -p ~/bin
     @mkdir -p ~/bin/.summon-backups
@@ -39,6 +41,8 @@ install:
     @cp target/release/summon ~/bin/summon
     @echo "🔐 Code signing binary for macOS..."
     @codesign --force --deep -s - ~/bin/summon 2>/dev/null || true
+    @echo "⚡ Starting summon daemon..."
+    @~/bin/summon daemon start >/dev/null 2>&1 || true
     @echo "✅ summon installed to ~/bin/summon"
 
 # Install Raycast example scripts to ~/.config/raycast/scripts

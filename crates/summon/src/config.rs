@@ -567,7 +567,11 @@ mod tests {
 
     #[test]
     fn load_from_file_success() {
-        let dir = std::env::temp_dir().join("summon_test_load_from_file");
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("summon_test_load_from_file_{suffix}"));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("summon.toml");
         std::fs::write(

@@ -1,0 +1,24 @@
+{
+  "target": "dev.zed.Zed",
+  "current_window_index": 0,
+  "windows": [
+    {
+      "title": ".dotfiles — claude-glm",
+      "role": "AXWindow",
+      "minimized": false,
+      "is_main": true
+    },
+    {
+      "title": "cv — mistral_cv_with_motivation_v2.tex",
+      "role": "AXWindow",
+      "minimized": false,
+      "is_main": false
+    },
+    {
+      "title": "evidia — justfile",
+      "role": "AXWindow",
+      "minimized": false,
+      "is_main": false
+    }
+  ]
+}

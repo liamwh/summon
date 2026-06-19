@@ -26,10 +26,10 @@ use std::ffi::CStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use accessibility::Error as AXError;
 use accessibility::action::AXUIElementActions;
 use accessibility::attribute::AXUIElementAttributes;
 use accessibility::ui_element::AXUIElement;
-use accessibility::Error as AXError;
 use objc::runtime::Object;
 use objc::{class, msg_send, sel, sel_impl};
 use thiserror::Error;
@@ -78,6 +78,17 @@ pub struct DecisionContext {
     pub launch_when_missing: bool,
     /// Effective setting: cycle windows when app is already focused.
     pub cycle_when_focused: bool,
+}
+
+/// Observed state for a target application gathered in one read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ObservedAppState {
+    /// Whether the target app is running.
+    pub is_running: bool,
+    /// Whether the target app is frontmost.
+    pub is_frontmost: bool,
+    /// The best available PID for the target app.
+    pub pid: Option<i32>,
 }
 
 /// Errors from querying or controlling a macOS application.
@@ -227,9 +238,21 @@ pub fn decide_action(
     target: &AppTarget,
     settings: &EffectiveSettings,
 ) -> (AppAction, DecisionContext) {
-    let is_running = controller.is_running(target);
-    let frontmost = if is_running {
-        if controller.is_frontmost(target) {
+    let observation = ObservedAppState {
+        is_running: controller.is_running(target),
+        is_frontmost: controller.is_frontmost(target),
+        pid: None,
+    };
+    decide_action_for_observation(observation, settings)
+}
+
+/// Determines the appropriate action from a single app observation.
+pub fn decide_action_for_observation(
+    observation: ObservedAppState,
+    settings: &EffectiveSettings,
+) -> (AppAction, DecisionContext) {
+    let frontmost = if observation.is_running {
+        if observation.is_frontmost {
             ObservedFrontmost::Yes
         } else {
             ObservedFrontmost::No
@@ -239,19 +262,19 @@ pub fn decide_action(
     };
 
     let context = DecisionContext {
-        is_running,
+        is_running: observation.is_running,
         frontmost,
         launch_when_missing: settings.launch_if_not_running,
         cycle_when_focused: settings.cycle_when_focused,
     };
 
-    let action = if !is_running {
+    let action = if !observation.is_running {
         if settings.launch_if_not_running {
             AppAction::Launch
         } else {
             AppAction::LaunchDisabled
         }
-    } else if frontmost == ObservedFrontmost::No {
+    } else if !observation.is_frontmost {
         AppAction::Focus
     } else if settings.cycle_when_focused {
         AppAction::Cycle
@@ -370,6 +393,9 @@ impl AppController for FakeAppController {
 
 /// Read-only app state queries.
 pub trait AppStateProbe {
+    /// Observes the target application once.
+    fn observe_target(&self, target: &AppTarget) -> Result<ObservedAppState, ControllerError>;
+
     /// Returns `true` if the target application is currently running.
     fn is_running(&self, target: &AppTarget) -> Result<bool, ControllerError>;
 
@@ -417,6 +443,69 @@ impl MacAppController {
             window_cycler: MacWindowCycler,
         }
     }
+
+    /// Observes the target app once so the hot path can reuse the same facts.
+    ///
+    /// # Errors
+    ///
+    /// Returns a controller error when native macOS state could not be read.
+    pub fn observe_target(&self, target: &AppTarget) -> Result<ObservedAppState, ControllerError> {
+        self.state_probe.observe_target(target)
+    }
+
+    /// Executes an action while reusing a prior observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a controller error if the requested action fails.
+    pub fn execute_action_with_observation(
+        &self,
+        target: &AppTarget,
+        action: AppAction,
+        observation: ObservedAppState,
+    ) -> Result<(), ControllerError> {
+        match action {
+            AppAction::Launch => self.launch(target),
+            AppAction::Focus => self.focus_with_observation(target, observation),
+            AppAction::Cycle => self.cycle_window_with_observation(target, observation),
+            AppAction::AlreadyFocused | AppAction::LaunchDisabled => Ok(()),
+        }
+    }
+
+    fn focus_with_observation(
+        &self,
+        target: &AppTarget,
+        observation: ObservedAppState,
+    ) -> Result<(), ControllerError> {
+        if let Some(pid) = observation.pid
+            && activate_pid(pid)
+        {
+            return Ok(());
+        }
+
+        // Fall back to `open` so races still behave sensibly if the app exited
+        // or the activation call was rejected by macOS.
+        self.launch(target).map_err(|err| match err {
+            ControllerError::LaunchFailed { target, reason } => {
+                ControllerError::FocusFailed { target, reason }
+            }
+            other => other,
+        })
+    }
+
+    fn cycle_window_with_observation(
+        &self,
+        target: &AppTarget,
+        observation: ObservedAppState,
+    ) -> Result<(), ControllerError> {
+        let pid = observation
+            .pid
+            .or_else(|| self.state_probe.pid_for_target(target).ok())
+            .ok_or_else(|| ControllerError::PidLookupFailed {
+                target: target_display(target),
+            })?;
+        self.window_cycler.cycle_window(target, pid)
+    }
 }
 
 impl MacAppStateProbe {
@@ -460,25 +549,36 @@ impl Default for MacAppController {
 }
 
 impl AppStateProbe for MacAppStateProbe {
+    fn observe_target(&self, target: &AppTarget) -> Result<ObservedAppState, ControllerError> {
+        let apps = self.running_apps_for_target(target);
+        let frontmost_app = self.frontmost_app();
+        let is_frontmost = frontmost_app
+            .as_ref()
+            .is_some_and(|app| app_matches_target(app, target));
+        let pid = if is_frontmost {
+            frontmost_app.map(|app| app.pid)
+        } else {
+            apps.first().map(|app| app.pid)
+        };
+
+        Ok(ObservedAppState {
+            is_running: !apps.is_empty() || is_frontmost,
+            is_frontmost,
+            pid,
+        })
+    }
+
     fn is_running(&self, target: &AppTarget) -> Result<bool, ControllerError> {
-        Ok(!self.running_apps_for_target(target).is_empty())
+        self.observe_target(target).map(|state| state.is_running)
     }
 
     fn is_frontmost(&self, target: &AppTarget) -> Result<bool, ControllerError> {
-        Ok(self
-            .frontmost_app()
-            .is_some_and(|app| app_matches_target(&app, target)))
+        self.observe_target(target).map(|state| state.is_frontmost)
     }
 
     fn pid_for_target(&self, target: &AppTarget) -> Result<i32, ControllerError> {
-        let apps = self.running_apps_for_target(target);
-        let frontmost_pid = self
-            .frontmost_app()
-            .filter(|app| app_matches_target(app, target))
-            .map(|app| app.pid);
-
-        frontmost_pid
-            .or_else(|| apps.first().map(|app| app.pid))
+        self.observe_target(target)?
+            .pid
             .ok_or_else(|| ControllerError::PidLookupFailed {
                 target: target_display(target),
             })
@@ -532,19 +632,13 @@ impl AppController for MacAppController {
     }
 
     fn focus(&self, target: &AppTarget) -> Result<(), ControllerError> {
-        // `open` brings the app to the foreground whether it was just launched
-        // or was already running, so launch and focus share the same mechanism.
-        self.launch(target).map_err(|err| match err {
-            ControllerError::LaunchFailed { target, reason } => {
-                ControllerError::FocusFailed { target, reason }
-            }
-            other => other,
-        })
+        let observation = self.observe_target(target)?;
+        self.focus_with_observation(target, observation)
     }
 
     fn cycle_window(&self, target: &AppTarget) -> Result<(), ControllerError> {
-        let pid = self.state_probe.pid_for_target(target)?;
-        self.window_cycler.cycle_window(target, pid)
+        let observation = self.observe_target(target)?;
+        self.cycle_window_with_observation(target, observation)
     }
 }
 
@@ -902,18 +996,25 @@ impl WindowCycler for MacWindowCycler {
             });
         }
 
-        let focused_identity = current_window_identity(&app)?;
-        let current_idx = focused_identity
-            .and_then(|identity| cyclable.iter().position(|w| w.identity == identity))
-            .or_else(|| cyclable.iter().position(|w| w.is_main))
-            .unwrap_or(0);
+        let current_window = current_window(&app)?;
+        let current_identity = current_window
+            .as_ref()
+            .map(snapshot_for_window)
+            .transpose()?
+            .map(|snapshot| snapshot.identity);
+        let current_idx = current_cyclable_window_index(
+            &cyclable,
+            current_window.as_ref(),
+            current_identity.as_ref(),
+        )
+        .unwrap_or(0);
         let next_idx = (current_idx + 1) % cyclable.len();
         let next = &cyclable[next_idx];
 
         next.element.raise().map_err(map_ax_error)?;
         let _ = next.element.set_main(true);
 
-        if verify_current_window(&app, &next.identity)? {
+        if verify_current_window(&app, &next.element, &next.identity)? {
             Ok(())
         } else {
             Err(ControllerError::RaiseVerificationFailed {
@@ -1011,24 +1112,51 @@ fn window_sort_key(window: &WindowSnapshot) -> String {
         .unwrap_or_default()
 }
 
-fn current_window_identity(app: &AXUIElement) -> Result<Option<WindowIdentity>, ControllerError> {
+fn current_window(app: &AXUIElement) -> Result<Option<AXUIElement>, ControllerError> {
     if let Some(focused) = optional_ax(app.focused_window())? {
-        return snapshot_for_window(&focused).map(|snapshot| Some(snapshot.identity));
+        return Ok(Some(focused));
     }
     if let Some(main) = optional_ax(app.main_window())? {
-        return snapshot_for_window(&main).map(|snapshot| Some(snapshot.identity));
+        return Ok(Some(main));
+    }
+    Ok(None)
+}
+
+fn current_cyclable_window_index(
+    cyclable: &[WindowSnapshot],
+    current_window: Option<&AXUIElement>,
+    current_identity: Option<&WindowIdentity>,
+) -> Option<usize> {
+    current_window
+        .and_then(|window| {
+            cyclable
+                .iter()
+                .position(|snapshot| snapshot.element == *window)
+        })
+        .or_else(|| {
+            current_identity
+                .and_then(|identity| cyclable.iter().position(|w| w.identity == *identity))
+        })
+        .or_else(|| cyclable.iter().position(|w| w.is_main))
+}
+
+fn current_window_identity(app: &AXUIElement) -> Result<Option<WindowIdentity>, ControllerError> {
+    if let Some(focused) = current_window(app)? {
+        return snapshot_for_window(&focused).map(|snapshot| Some(snapshot.identity));
     }
     Ok(None)
 }
 
 fn verify_current_window(
     app: &AXUIElement,
+    expected_window: &AXUIElement,
     expected: &WindowIdentity,
 ) -> Result<bool, ControllerError> {
+    if let Some(current) = current_window(app)? {
+        return Ok(current == *expected_window);
+    }
+
     current_window_identity(app).map(|current| {
-        // Some apps, notably Finder, allow AXRaise but do not expose
-        // AXFocusedWindow/AXMainWindow consistently. In that case AXRaise is
-        // the strongest available signal and verification is unsupported.
         current
             .as_ref()
             .map(|identity| identity == expected)
@@ -1141,6 +1269,9 @@ fn process_info(pid: i32) -> Option<ProcessInfo> {
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use serde::{Deserialize, Serialize};
+    use std::thread;
+    use std::time::Duration;
 
     /// Helper: bundle ID target for tests.
     fn finder() -> AppTarget {
@@ -1552,6 +1683,113 @@ mod tests {
         assert!(window.is_cyclable());
     }
 
+    #[test]
+    fn current_cyclable_window_index_prefers_actual_window_over_duplicate_titles() {
+        let first = fake_named_window_snapshot(
+            AXUIElement::application(101),
+            Some("project"),
+            Some("AXWindow"),
+            false,
+        );
+        let second = fake_named_window_snapshot(
+            AXUIElement::application(202),
+            Some("project"),
+            Some("AXWindow"),
+            false,
+        );
+        let cyclable = vec![first.clone(), second.clone()];
+
+        let idx =
+            current_cyclable_window_index(&cyclable, Some(&second.element), Some(&second.identity));
+
+        assert_eq!(idx, Some(1));
+    }
+
+    #[test]
+    fn zed_live_snapshot_fixture_selects_a_distinct_next_window() {
+        let fixture: WindowCycleFixture = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/zed-live-window-cycle.json"
+        )))
+        .expect("fixture should parse");
+
+        let snapshots = snapshots_from_fixture(&fixture);
+        let current_snapshot = snapshots[fixture.current_window_index].clone();
+        let cyclable = cyclable_windows(snapshots);
+        assert!(
+            cyclable.len() > 1,
+            "fixture should contain at least two cyclable windows"
+        );
+
+        let current_idx = current_cyclable_window_index(
+            &cyclable,
+            Some(&current_snapshot.element),
+            Some(&current_snapshot.identity),
+        )
+        .expect("fixture should identify the current cyclable window");
+        let next_idx = (current_idx + 1) % cyclable.len();
+
+        assert_ne!(next_idx, current_idx);
+        assert_ne!(cyclable[next_idx].element, current_snapshot.element);
+    }
+
+    #[test]
+    #[ignore]
+    fn print_live_zed_window_cycle_fixture() {
+        let target = AppTarget::BundleId("dev.zed.Zed".into());
+        let fixture =
+            capture_live_window_cycle_fixture(&target).expect("fixture capture should succeed");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&fixture).expect("fixture should serialize")
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn live_zed_cycle_changes_current_window_when_frontmost() {
+        let target = AppTarget::BundleId("dev.zed.Zed".into());
+        let probe = MacAppStateProbe::new();
+        let pid = probe
+            .pid_for_target(&target)
+            .expect("Zed should be running for the smoke test");
+        assert!(activate_pid(pid), "Zed should be activatable");
+        thread::sleep(Duration::from_millis(150));
+
+        let app = AXUIElement::application(pid);
+        app.set_messaging_timeout(1.0)
+            .expect("AX messaging timeout should be set");
+
+        let live_fixture = capture_live_window_cycle_fixture(&target)
+            .expect("live fixture capture should succeed");
+        let live_cyclable = live_fixture
+            .windows
+            .iter()
+            .filter(|window| window.role.as_deref() == Some("AXWindow") && !window.minimized)
+            .count();
+        assert!(
+            live_cyclable > 1,
+            "need at least two cyclable Zed windows for the smoke test"
+        );
+
+        let before = current_window(&app)
+            .expect("current window lookup should succeed")
+            .expect("Zed should have a current window");
+
+        MacWindowCycler
+            .cycle_window(&target, pid)
+            .expect("Zed cycle should succeed");
+
+        let after = current_window(&app)
+            .expect("current window lookup after cycle should succeed")
+            .expect("Zed should still have a current window");
+
+        assert_ne!(
+            before, after,
+            "cycling should switch to a different Zed window"
+        );
+    }
+
     fn fake_window_snapshot(
         role: Option<&str>,
         minimized: bool,
@@ -1559,18 +1797,124 @@ mod tests {
         size: Option<(i64, i64)>,
     ) -> WindowSnapshot {
         let size = size.map(|(width, height)| WindowSize { width, height });
+        fake_named_window_snapshot_with_size(
+            AXUIElement::system_wide(),
+            Some("Test"),
+            role,
+            minimized,
+            size,
+        )
+    }
+
+    fn fake_named_window_snapshot(
+        element: AXUIElement,
+        title: Option<&str>,
+        role: Option<&str>,
+        minimized: bool,
+    ) -> WindowSnapshot {
+        fake_named_window_snapshot_with_size(
+            element,
+            title,
+            role,
+            minimized,
+            Some(WindowSize {
+                width: 100,
+                height: 100,
+            }),
+        )
+    }
+
+    fn fake_named_window_snapshot_with_size(
+        element: AXUIElement,
+        title: Option<&str>,
+        role: Option<&str>,
+        minimized: bool,
+        size: Option<WindowSize>,
+    ) -> WindowSnapshot {
         WindowSnapshot {
-            element: AXUIElement::system_wide(),
+            element,
             identity: WindowIdentity {
-                title: Some("Test".into()),
+                title: title.map(str::to_string),
                 role: role.map(str::to_string),
             },
-            title: Some("Test".into()),
+            title: title.map(str::to_string),
             role: role.map(str::to_string),
             minimized,
             size,
             is_main: false,
         }
+    }
+
+    fn snapshots_from_fixture(fixture: &WindowCycleFixture) -> Vec<WindowSnapshot> {
+        fixture
+            .windows
+            .iter()
+            .enumerate()
+            .map(|(idx, window)| WindowSnapshot {
+                element: AXUIElement::application((idx + 1) as i32),
+                identity: WindowIdentity {
+                    title: window.title.clone(),
+                    role: window.role.clone(),
+                },
+                title: window.title.clone(),
+                role: window.role.clone(),
+                minimized: window.minimized,
+                size: Some(WindowSize {
+                    width: 100,
+                    height: 100,
+                }),
+                is_main: window.is_main,
+            })
+            .collect()
+    }
+
+    fn capture_live_window_cycle_fixture(
+        target: &AppTarget,
+    ) -> Result<WindowCycleFixture, ControllerError> {
+        let pid = MacAppStateProbe::new().pid_for_target(target)?;
+        let app = AXUIElement::application(pid);
+        app.set_messaging_timeout(1.0).map_err(map_ax_error)?;
+
+        let windows = ax_windows(&app)?;
+        let snapshots = snapshots_for_windows(&windows)?;
+        let current = current_window(&app)?;
+        let current_window_index = current
+            .as_ref()
+            .and_then(|window| {
+                snapshots
+                    .iter()
+                    .position(|snapshot| snapshot.element == *window)
+            })
+            .ok_or_else(|| ControllerError::AxApi("Could not resolve current Zed window".into()))?;
+
+        Ok(WindowCycleFixture {
+            target: target_display(target),
+            current_window_index,
+            windows: snapshots
+                .into_iter()
+                .map(|snapshot| WindowCycleFixtureWindow {
+                    title: snapshot.title,
+                    role: snapshot.role,
+                    minimized: snapshot.minimized,
+                    is_main: snapshot.is_main,
+                })
+                .collect(),
+        })
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    struct WindowCycleFixture {
+        target: String,
+        current_window_index: usize,
+        windows: Vec<WindowCycleFixtureWindow>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    struct WindowCycleFixtureWindow {
+        title: Option<String>,
+        role: Option<String>,
+        minimized: bool,
+        is_main: bool,
     }
 
     fn fake_running_app(

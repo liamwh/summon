@@ -5,8 +5,9 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser};
 use summon::app;
 use summon::config;
-use summon::controller;
+use summon::daemon;
 use summon::diagnostics;
+use summon::runner;
 
 /// Summon — open, focus, and cycle macOS apps from your keyboard.
 #[derive(Debug, Parser)]
@@ -51,6 +52,12 @@ pub enum Command {
         /// Optional app target to inspect.
         app: Option<String>,
     },
+
+    /// Manage the optional summon daemon.
+    Daemon {
+        #[command(subcommand)]
+        subcommand: DaemonCommand,
+    },
 }
 
 /// Configuration subcommands.
@@ -61,6 +68,22 @@ pub enum ConfigCommand {
 
     /// Validate the configuration file and print any errors.
     Check,
+}
+
+/// Daemon management subcommands.
+#[derive(Debug, Clone, Copy, clap::Subcommand)]
+pub enum DaemonCommand {
+    /// Start the summon daemon in the background.
+    Start,
+
+    /// Run the summon daemon in the foreground.
+    Run,
+
+    /// Show daemon status.
+    Status,
+
+    /// Stop the running daemon.
+    Stop,
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +104,7 @@ pub fn run(cli: Cli) -> ExitCode {
             request_accessibility,
             ref app,
         }) => run_doctor(request_accessibility, app.as_deref()),
+        Some(Command::Daemon { subcommand }) => run_daemon(subcommand),
         None => {
             if let Some(binding) = cli.binding {
                 run_binding(&binding, verbose)
@@ -178,29 +202,7 @@ fn run_config_check() -> ExitCode {
 /// Classifies the app string, uses sensible defaults (launch if not running,
 /// no cycling), and runs the decide/execute cycle.
 fn run_app(app: &str, verbose: u8) -> ExitCode {
-    let target = match app::classify_app_target(app) {
-        Ok(t) => t,
-        Err(err) => {
-            eprintln!("Invalid app target: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let settings = config::EffectiveSettings {
-        launch_if_not_running: true,
-        ..config::EffectiveSettings::default()
-    };
-
-    let ctrl = controller::MacAppController::new();
-    let (action, context) = controller::decide_action(&ctrl, &target, &settings);
-    print_decision(verbose, app, &target, action, context);
-
-    if let Err(err) = controller::execute_action(&ctrl, &target, action) {
-        eprintln!("Failed to {action:?} {app}: {err}");
-        return ExitCode::FAILURE;
-    }
-
-    ExitCode::SUCCESS
+    emit_run_output(daemon::run_app_or_direct(app, verbose))
 }
 
 /// `summon <binding>` — the core command path.
@@ -214,36 +216,7 @@ fn run_binding(name: &str, verbose: u8) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-
-    let config = match config::load_from(&path) {
-        Ok(c) => c,
-        Err(err) => {
-            eprintln!("Config error in {}:", path.display());
-            eprintln!("  {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let resolved = match config::resolve_binding(&config, name, &path) {
-        Ok(r) => r,
-        Err(err) => {
-            eprintln!("{err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let controller = controller::MacAppController::new();
-
-    let (action, context) =
-        controller::decide_action(&controller, &resolved.target, &resolved.settings);
-    print_decision(verbose, &resolved.name, &resolved.target, action, context);
-
-    if let Err(err) = controller::execute_action(&controller, &resolved.target, action) {
-        eprintln!("Failed to {action:?} {}: {err}", resolved.name);
-        return ExitCode::FAILURE;
-    }
-
-    ExitCode::SUCCESS
+    emit_run_output(daemon::run_binding_or_direct(name, &path, verbose))
 }
 
 /// `summon doctor` — runs diagnostic checks.
@@ -279,27 +252,62 @@ fn run_doctor(request_accessibility: bool, app: Option<&str>) -> ExitCode {
     }
 }
 
-fn print_decision(
-    verbose: u8,
-    label: &str,
-    target: &app::AppTarget,
-    action: controller::AppAction,
-    context: controller::DecisionContext,
-) {
-    if verbose == 0 {
-        return;
+fn run_daemon(subcommand: DaemonCommand) -> ExitCode {
+    match subcommand {
+        DaemonCommand::Start => match daemon::start() {
+            Ok(status) => {
+                println!(
+                    "Summon daemon running (pid {}, socket {})",
+                    status.pid,
+                    status.socket_path.display()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                ExitCode::FAILURE
+            }
+        },
+        DaemonCommand::Run => match daemon::run_server() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("{err}");
+                ExitCode::FAILURE
+            }
+        },
+        DaemonCommand::Status => match daemon::status() {
+            Ok(status) => {
+                println!("Summon daemon: running");
+                println!("  pid: {}", status.pid);
+                println!("  socket: {}", status.socket_path.display());
+                println!("  protocol: v{}", status.protocol_version);
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("Summon daemon: not running");
+                eprintln!("  {err}");
+                ExitCode::FAILURE
+            }
+        },
+        DaemonCommand::Stop => match daemon::stop() {
+            Ok(()) => {
+                println!("Summon daemon stopped.");
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                ExitCode::FAILURE
+            }
+        },
     }
+}
 
-    eprintln!(
-        "summon {label}: running={} frontmost={:?} launch={} cycle={} -> {action:?}",
-        context.is_running,
-        context.frontmost,
-        context.launch_when_missing,
-        context.cycle_when_focused
-    );
-
-    if verbose > 1 {
-        eprintln!("  target={}", controller::target_display(target));
+fn emit_run_output(output: runner::RunOutput) -> ExitCode {
+    output.emit();
+    if output.success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 
@@ -376,6 +384,28 @@ mod tests {
             Some(Command::Doctor {
                 request_accessibility: true,
                 app: Some(_)
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_daemon_start() {
+        let cli = Cli::try_parse_from(["summon", "daemon", "start"]).expect("should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Daemon {
+                subcommand: DaemonCommand::Start
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_daemon_status() {
+        let cli = Cli::try_parse_from(["summon", "daemon", "status"]).expect("should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Daemon {
+                subcommand: DaemonCommand::Status
             })
         ));
     }
