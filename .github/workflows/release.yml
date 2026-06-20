@@ -157,22 +157,24 @@ jobs:
       - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.guard.outputs.tag }}
         run: |
           set -euo pipefail
 
-          if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" release/* --clobber
+          if gh release view "${TAG}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" release/* --clobber --repo "${GH_REPO}"
             exit 0
           fi
 
           notes_file="$(mktemp)"
-          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+          gh api "repos/${GH_REPO}/releases/generate-notes" \
             -f tag_name="${TAG}" \
             -f target_commitish="${GITHUB_SHA}" \
             --jq '.body' > "${notes_file}"
 
           gh release create "${TAG}" release/* \
+            --repo "${GH_REPO}" \
             --title "${TAG}" \
             --notes-file "${notes_file}"
 
