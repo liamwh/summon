@@ -44,6 +44,7 @@ install:
     @echo "⚡ Starting summon daemon..."
     @~/bin/summon daemon start >/dev/null 2>&1 || true
     @echo "✅ summon installed to ~/bin/summon"
+    @echo "📝 daemon log: ~/Library/Logs/summon/summond.log"
 
 # Install Raycast example scripts to ~/.config/raycast/scripts
 install-raycast:

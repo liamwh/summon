@@ -1,24 +1,34 @@
 {
   "target": "dev.zed.Zed",
+  "pid": 1351,
   "current_window_index": 0,
+  "current_cyclable_index": 0,
+  "ordered_cyclable_window_indexes": [
+    0,
+    2,
+    1
+  ],
   "windows": [
     {
       "title": ".dotfiles — claude-glm",
       "role": "AXWindow",
       "minimized": false,
-      "is_main": true
-    },
-    {
-      "title": "cv — mistral_cv_with_motivation_v2.tex",
-      "role": "AXWindow",
-      "minimized": false,
-      "is_main": false
+      "is_main": true,
+      "is_cyclable": true
     },
     {
       "title": "evidia — justfile",
       "role": "AXWindow",
       "minimized": false,
-      "is_main": false
+      "is_main": false,
+      "is_cyclable": true
+    },
+    {
+      "title": "cv — mistral_cv_with_motivation_v2.tex",
+      "role": "AXWindow",
+      "minimized": false,
+      "is_main": false,
+      "is_cyclable": true
     }
   ]
 }

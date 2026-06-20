@@ -13,6 +13,9 @@ use crate::controller::{self, AppAction, DecisionContext, MacAppController};
 pub struct RunOutput {
     /// Whether the command succeeded.
     pub success: bool,
+    /// Whether retrying in direct mode may succeed when daemon mode could not.
+    #[serde(default)]
+    pub should_fallback_direct: bool,
     /// Content to write to stdout.
     pub stdout: String,
     /// Content to write to stderr.
@@ -83,30 +86,42 @@ fn run_target(
     settings: &EffectiveSettings,
     verbose: u8,
 ) -> RunOutput {
-    let controller = MacAppController::new();
-    let observation = match controller.observe_target(target) {
-        Ok(observation) => observation,
-        Err(err) => {
-            return failure(format!("Failed to inspect {label}: {err}\n"));
+    controller::with_autorelease_pool(|| {
+        let controller = MacAppController::new();
+        let observation = match controller.observe_target(target) {
+            Ok(observation) => observation,
+            Err(err) => {
+                return failure(format!("Failed to inspect {label}: {err}\n"));
+            }
+        };
+
+        let (action, context) = controller::decide_action_for_observation(observation, settings);
+        let stderr = render_decision(verbose, label, target, action, context);
+
+        match controller.execute_action_with_observation(target, action, observation) {
+            Ok(()) => RunOutput {
+                success: true,
+                should_fallback_direct: false,
+                stdout: String::new(),
+                stderr,
+            },
+            Err(err) => RunOutput {
+                success: false,
+                should_fallback_direct: matches!(
+                    err,
+                    controller::ControllerError::PermissionDenied { .. }
+                ),
+                stdout: String::new(),
+                stderr: format!("{stderr}Failed to {action:?} {label}: {err}\n"),
+            },
         }
-    };
-
-    let (action, context) = controller::decide_action_for_observation(observation, settings);
-    let stderr = render_decision(verbose, label, target, action, context);
-
-    match controller.execute_action_with_observation(target, action, observation) {
-        Ok(()) => RunOutput {
-            success: true,
-            stdout: String::new(),
-            stderr,
-        },
-        Err(err) => failure(format!("{stderr}Failed to {action:?} {label}: {err}\n")),
-    }
+    })
 }
 
 fn failure(stderr: String) -> RunOutput {
     RunOutput {
         success: false,
+        should_fallback_direct: false,
         stdout: String::new(),
         stderr,
     }

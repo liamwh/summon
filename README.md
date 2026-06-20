@@ -72,6 +72,7 @@ summon config path      # Print the active config file path
 summon config check     # Validate the config file
 summon doctor           # Check macOS permissions
 summon daemon status    # Inspect the optional warm daemon
+summon inspect windows dev.zed.Zed --pretty
 ```
 
 By default, `summon` will try the daemon first and fall back to direct mode if
@@ -117,6 +118,10 @@ For the snappiest hot path, `just install` restarts a background daemon that
 caches config and handles repeated invocations over a Unix socket. That keeps
 keypresses off the cold CLI startup path while still preserving a direct-mode
 fallback.
+
+The daemon logs to `~/Library/Logs/summon/summond.log`. Use
+`summon inspect windows <app> --pretty` to capture the live AX window state
+that Summon will use for cycling.
 
 ## Integrations
 

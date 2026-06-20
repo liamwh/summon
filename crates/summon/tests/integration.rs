@@ -209,6 +209,25 @@ fn app_command_rejects_invalid_path() {
 }
 
 #[test]
+fn inspect_windows_reports_missing_bundle_id() {
+    let output = summon_cmd()
+        .args(["inspect", "windows", "com.example.summon-missing-test-app"])
+        .output()
+        .expect("should run summon");
+
+    assert!(
+        !output.status.success(),
+        "inspect windows should fail for a missing bundle ID"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Could not find PID"),
+        "stderr should mention the missing PID lookup: {stderr}"
+    );
+}
+
+#[test]
 fn list_command_succeeds_with_config() {
     let dir = std::env::temp_dir().join("summon_test_list_with_config");
     let summon_dir = dir.join("summon");

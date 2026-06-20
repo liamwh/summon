@@ -22,7 +22,7 @@
 use crate::app::AppTarget;
 use crate::config::EffectiveSettings;
 
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -32,6 +32,7 @@ use accessibility::attribute::AXUIElementAttributes;
 use accessibility::ui_element::AXUIElement;
 use objc::runtime::Object;
 use objc::{class, msg_send, sel, sel_impl};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[link(name = "AppKit", kind = "framework")]
@@ -89,6 +90,43 @@ pub struct ObservedAppState {
     pub is_frontmost: bool,
     /// The best available PID for the target app.
     pub pid: Option<i32>,
+}
+
+/// A serializable snapshot of the live AX window state used for cycling.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct WindowCycleSnapshot {
+    /// Human-readable app target.
+    pub target: String,
+    /// PID used to inspect the target app.
+    #[serde(default)]
+    pub pid: i32,
+    /// Current window index in raw AX order, if macOS reported one.
+    #[serde(default)]
+    pub current_window_index: Option<usize>,
+    /// Current window index in cyclable order, if it resolved to a cyclable window.
+    #[serde(default)]
+    pub current_cyclable_index: Option<usize>,
+    /// Raw window indexes in the exact order Summon will cycle them.
+    #[serde(default)]
+    pub ordered_cyclable_window_indexes: Vec<usize>,
+    /// Raw AX windows reported for the target app.
+    pub windows: Vec<WindowCycleSnapshotWindow>,
+}
+
+/// A serializable view of one AX window used by cycle selection.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct WindowCycleSnapshotWindow {
+    /// Window title, if available.
+    pub title: Option<String>,
+    /// AX role, if available.
+    pub role: Option<String>,
+    /// Whether macOS reports the window as minimized.
+    pub minimized: bool,
+    /// Whether macOS reports the window as the main window.
+    pub is_main: bool,
+    /// Whether Summon considers the window eligible for cycling.
+    #[serde(default)]
+    pub is_cyclable: bool,
 }
 
 /// Errors from querying or controlling a macOS application.
@@ -531,7 +569,26 @@ impl MacAppStateProbe {
     }
 
     fn running_apps_for_target(&self, target: &AppTarget) -> Vec<RunningApp> {
-        running_apps()
+        let candidates = match target {
+            AppTarget::BundleId(id) => {
+                let apps = running_apps_with_bundle_id(id);
+                if apps.is_empty() {
+                    running_apps()
+                } else {
+                    apps
+                }
+            }
+            AppTarget::AppPath(path) => {
+                let expanded = expand_tilde_path(path);
+                app_bundle_id(Path::new(&expanded))
+                    .map(|bundle_id| running_apps_with_bundle_id(&bundle_id))
+                    .filter(|apps| !apps.is_empty())
+                    .unwrap_or_else(running_apps)
+            }
+            AppTarget::AppName(_) => running_apps(),
+        };
+
+        candidates
             .into_iter()
             .filter(|app| app_matches_target(app, target))
             .collect()
@@ -707,22 +764,23 @@ fn launch_bundle_id(bundle_id: &str) -> Result<(), String> {
 }
 
 fn activate_pid(pid: i32) -> bool {
-    // SAFETY: This uses AppKit's NSRunningApplication activation API for a PID
-    // already returned by NSWorkspace. A null object means the app disappeared.
-    unsafe {
-        let app: *mut Object =
-            msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid];
-        if app.is_null() {
-            return false;
-        }
+    with_autorelease_pool(|| {
+        // SAFETY: This uses AppKit's NSRunningApplication activation API for a PID
+        // already returned by NSWorkspace. A null object means the app disappeared.
+        unsafe {
+            let app: *mut Object = msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid];
+            if app.is_null() {
+                return false;
+            }
 
-        const NS_APPLICATION_ACTIVATE_ALL_WINDOWS: usize = 1 << 0;
-        const NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS: usize = 1 << 1;
-        let options =
-            NS_APPLICATION_ACTIVATE_ALL_WINDOWS | NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS;
-        let activated: bool = msg_send![app, activateWithOptions: options];
-        activated
-    }
+            const NS_APPLICATION_ACTIVATE_ALL_WINDOWS: usize = 1 << 0;
+            const NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS: usize = 1 << 1;
+            let options =
+                NS_APPLICATION_ACTIVATE_ALL_WINDOWS | NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS;
+            let activated: bool = msg_send![app, activateWithOptions: options];
+            activated
+        }
+    })
 }
 
 fn find_app_by_bundle_id(bundle_id: &str) -> Option<PathBuf> {
@@ -854,31 +912,52 @@ struct RunningApp {
 }
 
 fn running_apps() -> Vec<RunningApp> {
-    // SAFETY: Objective-C messages are sent to documented AppKit/Foundation
-    // classes. Returned objects are only inspected during the call.
-    unsafe {
-        let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
-        if workspace.is_null() {
-            return Vec::new();
-        }
+    with_autorelease_pool(|| {
+        // SAFETY: Objective-C messages are sent to documented AppKit/Foundation
+        // classes. Returned objects are only inspected during the call.
+        unsafe {
+            let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+            if workspace.is_null() {
+                return Vec::new();
+            }
 
-        let apps: *mut Object = msg_send![workspace, runningApplications];
-        nsarray_to_running_apps(apps)
-    }
+            let apps: *mut Object = msg_send![workspace, runningApplications];
+            nsarray_to_running_apps(apps)
+        }
+    })
+}
+
+fn running_apps_with_bundle_id(bundle_id: &str) -> Vec<RunningApp> {
+    with_autorelease_pool(|| {
+        // SAFETY: Objective-C messages are sent to documented AppKit/Foundation
+        // classes. The temporary NSString lives for the duration of the call.
+        unsafe {
+            let Some(bundle_id) = nsstring_from_str(bundle_id) else {
+                return Vec::new();
+            };
+            let apps: *mut Object = msg_send![
+                class!(NSRunningApplication),
+                runningApplicationsWithBundleIdentifier: bundle_id
+            ];
+            nsarray_to_running_apps(apps)
+        }
+    })
 }
 
 fn frontmost_running_app() -> Option<RunningApp> {
-    // SAFETY: Objective-C messages are sent to documented AppKit/Foundation
-    // classes. Returned objects are only inspected during the call.
-    unsafe {
-        let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
-        if workspace.is_null() {
-            return None;
-        }
+    with_autorelease_pool(|| {
+        // SAFETY: Objective-C messages are sent to documented AppKit/Foundation
+        // classes. Returned objects are only inspected during the call.
+        unsafe {
+            let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+            if workspace.is_null() {
+                return None;
+            }
 
-        let app: *mut Object = msg_send![workspace, frontmostApplication];
-        running_app_from_ns(app)
-    }
+            let app: *mut Object = msg_send![workspace, frontmostApplication];
+            running_app_from_ns(app)
+        }
+    })
 }
 
 unsafe fn nsarray_to_running_apps(apps: *mut Object) -> Vec<RunningApp> {
@@ -936,6 +1015,13 @@ unsafe fn nsstring_to_string(value: *mut Object) -> Option<String> {
             .to_string_lossy()
             .into_owned(),
     )
+}
+
+unsafe fn nsstring_from_str(value: &str) -> Option<*mut Object> {
+    let value = CString::new(value).ok()?;
+    let string: *mut Object =
+        unsafe { msg_send![class!(NSString), stringWithUTF8String: value.as_ptr()] };
+    (!string.is_null()).then_some(string)
 }
 
 fn app_matches_target(app: &RunningApp, target: &AppTarget) -> bool {
@@ -1140,6 +1226,87 @@ fn current_cyclable_window_index(
         .or_else(|| cyclable.iter().position(|w| w.is_main))
 }
 
+/// Captures the live AX window state Summon uses to cycle a target app.
+///
+/// # Errors
+///
+/// Returns a controller error when the target app is not running or its live
+/// AX window state could not be read.
+pub fn capture_window_cycle_snapshot(
+    target: &AppTarget,
+) -> Result<WindowCycleSnapshot, ControllerError> {
+    with_autorelease_pool(|| {
+        let pid = MacAppStateProbe::new().pid_for_target(target)?;
+        let app = AXUIElement::application(pid);
+        app.set_messaging_timeout(1.0).map_err(map_ax_error)?;
+
+        let windows = ax_windows(&app)?;
+        let snapshots = snapshots_for_windows(&windows)?;
+        let current = current_window(&app)?;
+
+        build_window_cycle_snapshot(target, pid, snapshots, current.as_ref())
+    })
+}
+
+fn build_window_cycle_snapshot(
+    target: &AppTarget,
+    pid: i32,
+    snapshots: Vec<WindowSnapshot>,
+    current_window: Option<&AXUIElement>,
+) -> Result<WindowCycleSnapshot, ControllerError> {
+    let current_window_index = current_window.and_then(|window| {
+        snapshots
+            .iter()
+            .position(|snapshot| snapshot.element == *window)
+    });
+    let current_identity = current_window
+        .map(snapshot_for_window)
+        .transpose()?
+        .map(|snapshot| snapshot.identity);
+
+    let mut cyclable: Vec<_> = snapshots
+        .iter()
+        .cloned()
+        .enumerate()
+        .filter(|(_, snapshot)| snapshot.is_cyclable())
+        .collect();
+    cyclable.sort_by_key(|(_, snapshot)| window_sort_key(snapshot));
+
+    let ordered_cyclable_window_indexes = cyclable.iter().map(|(idx, _)| *idx).collect::<Vec<_>>();
+    let current_cyclable_index = {
+        let cyclable_snapshots = cyclable
+            .iter()
+            .map(|(_, snapshot)| snapshot.clone())
+            .collect::<Vec<_>>();
+        current_cyclable_window_index(
+            &cyclable_snapshots,
+            current_window,
+            current_identity.as_ref(),
+        )
+    };
+
+    Ok(WindowCycleSnapshot {
+        target: target_display(target),
+        pid,
+        current_window_index,
+        current_cyclable_index,
+        ordered_cyclable_window_indexes,
+        windows: snapshots
+            .into_iter()
+            .map(|snapshot| {
+                let is_cyclable = snapshot.is_cyclable();
+                WindowCycleSnapshotWindow {
+                    title: snapshot.title,
+                    role: snapshot.role,
+                    minimized: snapshot.minimized,
+                    is_main: snapshot.is_main,
+                    is_cyclable,
+                }
+            })
+            .collect(),
+    })
+}
+
 fn current_window_identity(app: &AXUIElement) -> Result<Option<WindowIdentity>, ControllerError> {
     if let Some(focused) = current_window(app)? {
         return snapshot_for_window(&focused).map(|snapshot| Some(snapshot.identity));
@@ -1201,6 +1368,38 @@ fn accessibility_permission_error() -> ControllerError {
             .map(|info| format!("{} (pid {})", info.name, info.pid))
             .unwrap_or_else(|| "unknown".to_string()),
         likely_process,
+    }
+}
+
+/// Runs a closure inside a fresh Objective-C autorelease pool.
+pub(crate) fn with_autorelease_pool<F, R>(operation: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let pool = unsafe { AutoreleasePool::new() };
+    let result = operation();
+    drop(pool);
+    result
+}
+
+struct AutoreleasePool(*mut Object);
+
+impl AutoreleasePool {
+    unsafe fn new() -> Self {
+        let pool: *mut Object = unsafe { msg_send![class!(NSAutoreleasePool), new] };
+        Self(pool)
+    }
+}
+
+impl Drop for AutoreleasePool {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+
+        unsafe {
+            let _: () = msg_send![self.0, drain];
+        }
     }
 }
 
@@ -1269,7 +1468,6 @@ fn process_info(pid: i32) -> Option<ProcessInfo> {
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use serde::{Deserialize, Serialize};
     use std::thread;
     use std::time::Duration;
 
@@ -1707,14 +1905,17 @@ mod tests {
 
     #[test]
     fn zed_live_snapshot_fixture_selects_a_distinct_next_window() {
-        let fixture: WindowCycleFixture = serde_json::from_str(include_str!(concat!(
+        let fixture: WindowCycleSnapshot = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/zed-live-window-cycle.json"
         )))
         .expect("fixture should parse");
 
         let snapshots = snapshots_from_fixture(&fixture);
-        let current_snapshot = snapshots[fixture.current_window_index].clone();
+        let current_window_index = fixture
+            .current_window_index
+            .expect("fixture should include a current window index");
+        let current_snapshot = snapshots[current_window_index].clone();
         let cyclable = cyclable_windows(snapshots);
         assert!(
             cyclable.len() > 1,
@@ -1738,7 +1939,7 @@ mod tests {
     fn print_live_zed_window_cycle_fixture() {
         let target = AppTarget::BundleId("dev.zed.Zed".into());
         let fixture =
-            capture_live_window_cycle_fixture(&target).expect("fixture capture should succeed");
+            capture_window_cycle_snapshot(&target).expect("fixture capture should succeed");
         println!(
             "{}",
             serde_json::to_string_pretty(&fixture).expect("fixture should serialize")
@@ -1760,12 +1961,12 @@ mod tests {
         app.set_messaging_timeout(1.0)
             .expect("AX messaging timeout should be set");
 
-        let live_fixture = capture_live_window_cycle_fixture(&target)
-            .expect("live fixture capture should succeed");
+        let live_fixture =
+            capture_window_cycle_snapshot(&target).expect("live fixture capture should succeed");
         let live_cyclable = live_fixture
             .windows
             .iter()
-            .filter(|window| window.role.as_deref() == Some("AXWindow") && !window.minimized)
+            .filter(|window| window.is_cyclable)
             .count();
         assert!(
             live_cyclable > 1,
@@ -1845,7 +2046,7 @@ mod tests {
         }
     }
 
-    fn snapshots_from_fixture(fixture: &WindowCycleFixture) -> Vec<WindowSnapshot> {
+    fn snapshots_from_fixture(fixture: &WindowCycleSnapshot) -> Vec<WindowSnapshot> {
         fixture
             .windows
             .iter()
@@ -1866,55 +2067,6 @@ mod tests {
                 is_main: window.is_main,
             })
             .collect()
-    }
-
-    fn capture_live_window_cycle_fixture(
-        target: &AppTarget,
-    ) -> Result<WindowCycleFixture, ControllerError> {
-        let pid = MacAppStateProbe::new().pid_for_target(target)?;
-        let app = AXUIElement::application(pid);
-        app.set_messaging_timeout(1.0).map_err(map_ax_error)?;
-
-        let windows = ax_windows(&app)?;
-        let snapshots = snapshots_for_windows(&windows)?;
-        let current = current_window(&app)?;
-        let current_window_index = current
-            .as_ref()
-            .and_then(|window| {
-                snapshots
-                    .iter()
-                    .position(|snapshot| snapshot.element == *window)
-            })
-            .ok_or_else(|| ControllerError::AxApi("Could not resolve current Zed window".into()))?;
-
-        Ok(WindowCycleFixture {
-            target: target_display(target),
-            current_window_index,
-            windows: snapshots
-                .into_iter()
-                .map(|snapshot| WindowCycleFixtureWindow {
-                    title: snapshot.title,
-                    role: snapshot.role,
-                    minimized: snapshot.minimized,
-                    is_main: snapshot.is_main,
-                })
-                .collect(),
-        })
-    }
-
-    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-    struct WindowCycleFixture {
-        target: String,
-        current_window_index: usize,
-        windows: Vec<WindowCycleFixtureWindow>,
-    }
-
-    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-    struct WindowCycleFixtureWindow {
-        title: Option<String>,
-        role: Option<String>,
-        minimized: bool,
-        is_main: bool,
     }
 
     fn fake_running_app(

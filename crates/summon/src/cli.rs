@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser};
 use summon::app;
 use summon::config;
+use summon::controller;
 use summon::daemon;
 use summon::diagnostics;
 use summon::runner;
@@ -53,6 +54,12 @@ pub enum Command {
         app: Option<String>,
     },
 
+    /// Inspect live app state that Summon uses internally.
+    Inspect {
+        #[command(subcommand)]
+        subcommand: InspectCommand,
+    },
+
     /// Manage the optional summon daemon.
     Daemon {
         #[command(subcommand)]
@@ -68,6 +75,20 @@ pub enum ConfigCommand {
 
     /// Validate the configuration file and print any errors.
     Check,
+}
+
+/// Inspection subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum InspectCommand {
+    /// Print the live AX window state used for cycling an app.
+    Windows {
+        /// Application name, bundle identifier, or path.
+        app: String,
+
+        /// Pretty-print the JSON output.
+        #[arg(long)]
+        pretty: bool,
+    },
 }
 
 /// Daemon management subcommands.
@@ -104,6 +125,7 @@ pub fn run(cli: Cli) -> ExitCode {
             request_accessibility,
             ref app,
         }) => run_doctor(request_accessibility, app.as_deref()),
+        Some(Command::Inspect { subcommand }) => run_inspect(subcommand),
         Some(Command::Daemon { subcommand }) => run_daemon(subcommand),
         None => {
             if let Some(binding) = cli.binding {
@@ -261,6 +283,9 @@ fn run_daemon(subcommand: DaemonCommand) -> ExitCode {
                     status.pid,
                     status.socket_path.display()
                 );
+                if let Ok(path) = daemon::log_path() {
+                    println!("  log: {}", path.display());
+                }
                 ExitCode::SUCCESS
             }
             Err(err) => {
@@ -281,6 +306,9 @@ fn run_daemon(subcommand: DaemonCommand) -> ExitCode {
                 println!("  pid: {}", status.pid);
                 println!("  socket: {}", status.socket_path.display());
                 println!("  protocol: v{}", status.protocol_version);
+                if let Ok(path) = daemon::log_path() {
+                    println!("  log: {}", path.display());
+                }
                 ExitCode::SUCCESS
             }
             Err(err) => {
@@ -299,6 +327,45 @@ fn run_daemon(subcommand: DaemonCommand) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+    }
+}
+
+fn run_inspect(subcommand: InspectCommand) -> ExitCode {
+    match subcommand {
+        InspectCommand::Windows { app, pretty } => {
+            let target = match app::classify_app_target(&app) {
+                Ok(target) => target,
+                Err(err) => {
+                    eprintln!("Invalid app target: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            let snapshot = match controller::capture_window_cycle_snapshot(&target) {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    eprintln!("Failed to inspect windows for {app}: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            let render = if pretty {
+                serde_json::to_string_pretty(&snapshot)
+            } else {
+                serde_json::to_string(&snapshot)
+            };
+
+            match render {
+                Ok(json) => {
+                    println!("{json}");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("Failed to serialize window snapshot: {err}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
     }
 }
 
@@ -386,6 +453,21 @@ mod tests {
                 app: Some(_)
             })
         ));
+    }
+
+    #[test]
+    fn parse_inspect_windows() {
+        let cli = Cli::try_parse_from(["summon", "inspect", "windows", "dev.zed.Zed", "--pretty"])
+            .expect("should parse");
+        match cli.command {
+            Some(Command::Inspect {
+                subcommand: InspectCommand::Windows { app, pretty },
+            }) => {
+                assert_eq!(app, "dev.zed.Zed");
+                assert!(pretty);
+            }
+            other => panic!("expected Inspect Windows, got {other:?}"),
+        }
     }
 
     #[test]

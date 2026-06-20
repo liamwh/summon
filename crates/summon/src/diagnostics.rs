@@ -109,20 +109,22 @@ pub struct DoctorOptions<'a> {
 /// 5. App path targets point to existing files (warning if missing).
 /// 6. macOS Accessibility permission status.
 pub fn run_doctor(options: DoctorOptions<'_>) -> DoctorResult {
-    let mut result = DoctorResult::new();
+    controller::with_autorelease_pool(|| {
+        let mut result = DoctorResult::new();
 
-    let config_path = check_config_path(&mut result);
+        let config_path = check_config_path(&mut result);
 
-    let config = check_config_file(&config_path, &mut result);
+        let config = check_config_file(&config_path, &mut result);
 
-    if let Some(config) = config.as_ref() {
-        check_bindings(config, &mut result);
-    }
+        if let Some(config) = config.as_ref() {
+            check_bindings(config, &mut result);
+        }
 
-    check_accessibility_permission(options.request_accessibility, &mut result);
-    check_accessibility_smoke(options.target, &mut result);
+        check_accessibility_permission(options.request_accessibility, &mut result);
+        check_accessibility_smoke(options.target, &mut result);
 
-    result
+        result
+    })
 }
 
 /// Resolves and prints the config path.

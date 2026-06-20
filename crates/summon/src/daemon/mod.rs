@@ -5,6 +5,7 @@ pub mod protocol;
 pub mod server;
 
 use std::ffi::OsStr;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::thread;
@@ -145,6 +146,20 @@ pub fn status() -> Result<Status, DaemonError> {
     client::ping(&socket_path).map_err(Into::into)
 }
 
+/// Resolves the daemon log path.
+pub fn log_path() -> Result<PathBuf, DaemonError> {
+    if let Ok(path) = std::env::var("SUMMOND_LOG_PATH") {
+        return Ok(PathBuf::from(path));
+    }
+
+    let home = std::env::var("HOME").map_err(|_| DaemonError::NoHome)?;
+    Ok(PathBuf::from(home)
+        .join("Library")
+        .join("Logs")
+        .join("summon")
+        .join("summond.log"))
+}
+
 /// Stops the daemon if it is running.
 pub fn stop() -> Result<(), DaemonError> {
     if should_use_launch_agent() {
@@ -187,14 +202,23 @@ where
         Ok(path) => path,
         Err(_) => return fallback(),
     };
+    let mut fallback = Some(fallback);
 
     match client::run(&socket_path, request) {
-        Ok(output) => output,
+        Ok(output) => maybe_fallback_to_direct(output, || {
+            fallback
+                .take()
+                .expect("fallback should only be consumed once")()
+        }),
         Err(ClientError::Unavailable { .. }) => {
             let _ = ensure_started();
-            fallback()
+            fallback
+                .take()
+                .expect("fallback should only be consumed once")()
         }
-        Err(_) => fallback(),
+        Err(_) => fallback
+            .take()
+            .expect("fallback should only be consumed once")(),
     }
 }
 
@@ -225,6 +249,8 @@ fn should_use_launch_agent() -> bool {
 fn install_or_restart_launch_agent() -> Result<(), DaemonError> {
     let plist_path = launch_agent_path()?;
     let current_exe = std::env::current_exe().map_err(|err| DaemonError::Start(err.to_string()))?;
+    let socket_path = socket_path()?;
+    let log_path = log_path()?;
 
     if let Some(parent) = plist_path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| DaemonError::LaunchAgentWrite {
@@ -232,12 +258,20 @@ fn install_or_restart_launch_agent() -> Result<(), DaemonError> {
             reason: err.to_string(),
         })?;
     }
-
-    std::fs::write(&plist_path, launch_agent_plist(&current_exe)).map_err(|err| {
-        DaemonError::LaunchAgentWrite {
-            path: plist_path.display().to_string(),
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| DaemonError::LaunchAgentWrite {
+            path: parent.display().to_string(),
             reason: err.to_string(),
-        }
+        })?;
+    }
+
+    std::fs::write(
+        &plist_path,
+        launch_agent_plist(&current_exe, &socket_path, &log_path),
+    )
+    .map_err(|err| DaemonError::LaunchAgentWrite {
+        path: plist_path.display().to_string(),
+        reason: err.to_string(),
     })?;
 
     let domain = launchctl_domain();
@@ -306,7 +340,7 @@ fn launch_agent_path() -> Result<PathBuf, DaemonError> {
         .join(format!("{LAUNCH_AGENT_LABEL}.plist")))
 }
 
-fn launch_agent_plist(executable: &Path) -> String {
+fn launch_agent_plist(executable: &Path, socket_path: &Path, log_path: &Path) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -324,6 +358,17 @@ fn launch_agent_plist(executable: &Path) -> String {
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SUMMOND_SOCKET_PATH</key>
+    <string>{socket_path}</string>
+    <key>SUMMOND_LOG_PATH</key>
+    <string>{log_path}</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>{log_path}</string>
+  <key>StandardErrorPath</key>
+  <string>{log_path}</string>
   <key>ProcessType</key>
   <string>Interactive</string>
   <key>LimitLoadToSessionType</key>
@@ -334,7 +379,9 @@ fn launch_agent_plist(executable: &Path) -> String {
 </plist>
 "#,
         label = LAUNCH_AGENT_LABEL,
-        exe = executable.display()
+        exe = executable.display(),
+        socket_path = socket_path.display(),
+        log_path = log_path.display()
     )
 }
 
@@ -374,16 +421,29 @@ where
 
 fn spawn_transient_process() -> Result<(), DaemonError> {
     let socket_path = socket_path()?;
+    let log_path = log_path()?;
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| DaemonError::Start(err.to_string()))?;
     }
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| DaemonError::Start(err.to_string()))?;
+    }
+
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|err| DaemonError::Start(err.to_string()))?;
+    let log_file_clone = log_file
+        .try_clone()
+        .map_err(|err| DaemonError::Start(err.to_string()))?;
 
     let current_exe = std::env::current_exe().map_err(|err| DaemonError::Start(err.to_string()))?;
     std::process::Command::new(current_exe)
         .args(["daemon", "run"])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(log_file_clone))
+        .stderr(Stdio::from(log_file))
         .spawn()
         .map(|_| ())
         .map_err(|err| DaemonError::Start(err.to_string()))
@@ -405,7 +465,94 @@ fn wait_until_ready(socket_path: &Path, timeout: Duration) -> Result<Status, Dae
 fn daemon_failure(message: String) -> RunOutput {
     RunOutput {
         success: false,
+        should_fallback_direct: false,
         stdout: String::new(),
         stderr: format!("Daemon error: {message}\n"),
+    }
+}
+
+fn maybe_fallback_to_direct<F>(daemon_output: RunOutput, fallback: F) -> RunOutput
+where
+    F: FnOnce() -> RunOutput,
+{
+    if daemon_output.success || !daemon_output.should_fallback_direct {
+        return daemon_output;
+    }
+
+    let direct_output = fallback();
+    if direct_output.success {
+        return direct_output;
+    }
+
+    RunOutput {
+        success: false,
+        should_fallback_direct: false,
+        stdout: direct_output.stdout,
+        stderr: format!(
+            "{}Direct fallback also failed:\n{}",
+            daemon_output.stderr, direct_output.stderr
+        ),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_agent_plist_includes_shared_log_path() {
+        let plist = launch_agent_plist(
+            Path::new("/Users/test/bin/summon"),
+            Path::new("/Users/test/.cache/summon/summond.sock"),
+            Path::new("/Users/test/Library/Logs/summon/summond.log"),
+        );
+
+        assert!(plist.contains("<key>SUMMOND_SOCKET_PATH</key>"));
+        assert!(plist.contains("<key>StandardOutPath</key>"));
+        assert!(plist.contains("<key>StandardErrorPath</key>"));
+        assert!(plist.contains("/Users/test/Library/Logs/summon/summond.log"));
+    }
+
+    #[test]
+    fn direct_fallback_prefers_successful_direct_run() {
+        let daemon_output = RunOutput {
+            success: false,
+            should_fallback_direct: true,
+            stdout: String::new(),
+            stderr: "daemon failed\n".into(),
+        };
+
+        let direct_output = maybe_fallback_to_direct(daemon_output, || RunOutput {
+            success: true,
+            should_fallback_direct: false,
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+
+        assert!(direct_output.success);
+    }
+
+    #[test]
+    fn direct_fallback_preserves_daemon_context_when_both_fail() {
+        let output = maybe_fallback_to_direct(
+            RunOutput {
+                success: false,
+                should_fallback_direct: true,
+                stdout: String::new(),
+                stderr: "daemon failed\n".into(),
+            },
+            || RunOutput {
+                success: false,
+                should_fallback_direct: false,
+                stdout: String::new(),
+                stderr: "direct failed\n".into(),
+            },
+        );
+
+        assert!(!output.success);
+        assert!(output.stderr.contains("daemon failed"));
+        assert!(output.stderr.contains("Direct fallback also failed"));
+        assert!(output.stderr.contains("direct failed"));
     }
 }

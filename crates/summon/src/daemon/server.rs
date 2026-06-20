@@ -5,10 +5,11 @@ use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
 
+use crate::controller;
 use crate::daemon::protocol::{
     PROTOCOL_VERSION, Request, RequestEnvelope, Response, ResponseEnvelope, Status,
 };
@@ -120,7 +121,11 @@ fn handle_stream(
         ));
     }
 
-    let (response, should_stop) = match request.request {
+    let started = Instant::now();
+    let summary = request_summary(&request.request);
+    eprintln!("{} request start {}", log_timestamp(), summary);
+
+    let (response, should_stop) = controller::with_autorelease_pool(|| match request.request {
         Request::Ping => (
             Response::Pong(Status {
                 pid: std::process::id(),
@@ -139,10 +144,62 @@ fn handle_stream(
             let output = configs.run_binding(&config_path, &name, verbose);
             (Response::Run(output), false)
         }
-    };
+    });
+
+    if let Response::Run(output) = &response {
+        let stderr = output.stderr.trim();
+        if stderr.is_empty() {
+            eprintln!(
+                "{} request end {} success={} elapsed_ms={}",
+                log_timestamp(),
+                summary,
+                output.success,
+                started.elapsed().as_millis()
+            );
+        } else {
+            eprintln!(
+                "{} request end {} success={} elapsed_ms={} stderr={}",
+                log_timestamp(),
+                summary,
+                output.success,
+                started.elapsed().as_millis(),
+                stderr
+            );
+        }
+    } else {
+        eprintln!(
+            "{} request end {} elapsed_ms={}",
+            log_timestamp(),
+            summary,
+            started.elapsed().as_millis()
+        );
+    }
 
     write_json(stream, &ResponseEnvelope::new(response))?;
     Ok(should_stop)
+}
+
+fn request_summary(request: &Request) -> String {
+    match request {
+        Request::Ping => "ping".to_string(),
+        Request::Stop => "stop".to_string(),
+        Request::RunApp { app, verbose } => format!("run-app app={app} verbose={verbose}"),
+        Request::RunBinding {
+            name,
+            config_path,
+            verbose,
+        } => format!(
+            "run-binding name={name} config={} verbose={verbose}",
+            config_path.display()
+        ),
+    }
+}
+
+fn log_timestamp() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("ts={}s", now.as_secs())
 }
 
 #[derive(Default)]
@@ -157,6 +214,7 @@ impl ConfigCache {
             Ok(config) => runner::run_binding_with_config(name, config_path, config, verbose),
             Err(stderr) => RunOutput {
                 success: false,
+                should_fallback_direct: false,
                 stdout: String::new(),
                 stderr,
             },
