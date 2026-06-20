@@ -24,7 +24,7 @@ fn unique_test_dir(label: &str) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time should move forward")
         .as_nanos();
-    std::env::temp_dir().join(format!("summon_{label}_{suffix}"))
+    std::env::temp_dir().join(format!("s_{label}_{suffix:x}"))
 }
 
 // ---------------------------------------------------------------------------
