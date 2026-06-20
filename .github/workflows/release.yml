@@ -118,21 +118,23 @@ jobs:
       - name: Publish crate if needed
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          VERSION: ${{ needs.guard.outputs.version }}
         run: |
           set -euo pipefail
 
-          published_version="$(
-            curl -fsSL "https://crates.io/api/v1/crates/${PACKAGE_NAME}" 2>/dev/null \
-              | jq -r '.crate.max_version // empty' || true
-          )"
-
-          if [ "${published_version}" = "${VERSION}" ]; then
-            echo "${PACKAGE_NAME} ${VERSION} is already published."
+          publish_log="$(mktemp)"
+          if cargo publish --locked --package "${PACKAGE_NAME}" --token "${CARGO_REGISTRY_TOKEN}" \
+            >"${publish_log}" 2>&1; then
+            cat "${publish_log}"
             exit 0
           fi
 
-          cargo publish --locked --package "${PACKAGE_NAME}" --token "${CARGO_REGISTRY_TOKEN}"
+          cat "${publish_log}"
+          if grep -q "already exists on crates.io index" "${publish_log}"; then
+            echo "${PACKAGE_NAME} is already published for this version."
+            exit 0
+          fi
+
+          exit 1
 
   github-release:
     name: Publish GitHub release
