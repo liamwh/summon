@@ -237,13 +237,13 @@ jobs:
           cp summon-switcher.rb tap/Formula/summon-switcher.rb
 
           cd tap
-          if git diff --quiet -- Formula/summon-switcher.rb; then
+          git add Formula/summon-switcher.rb
+          if git diff --cached --quiet; then
             echo "Formula is already up to date."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/summon-switcher.rb
           git commit -m "summon-switcher ${VERSION}"
           git push
