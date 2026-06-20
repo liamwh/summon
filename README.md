@@ -29,7 +29,9 @@ Summon is designed to be fast, boring, and easy to keep in your dotfiles.
 ## Installation
 
 ```sh
-cargo install summon
+cargo install summon-switcher
+
+brew install liamwh/summon-switcher/summon-switcher
 
 # from source, install to ~/bin and start the warm daemon path
 just install

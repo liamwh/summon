@@ -1,6 +1,6 @@
 //! Daemon server implementation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -14,6 +14,8 @@ use crate::daemon::protocol::{
     PROTOCOL_VERSION, Request, RequestEnvelope, Response, ResponseEnvelope, Status,
 };
 use crate::runner::{self, RunOutput};
+
+const MAX_CONFIG_CACHE_ENTRIES: usize = 8;
 
 /// Errors from serving the summon daemon.
 #[derive(Debug, Error)]
@@ -205,12 +207,12 @@ fn log_timestamp() -> String {
 #[derive(Default)]
 struct ConfigCache {
     entries: HashMap<PathBuf, CachedConfig>,
+    access_order: VecDeque<PathBuf>,
 }
 
 impl ConfigCache {
     fn run_binding(&mut self, config_path: &Path, name: &str, verbose: u8) -> RunOutput {
-        let entry = self.entries.entry(config_path.to_path_buf()).or_default();
-        match entry.config(config_path) {
+        match self.config(config_path) {
             Ok(config) => runner::run_binding_with_config(name, config_path, config, verbose),
             Err(stderr) => RunOutput {
                 success: false,
@@ -218,6 +220,29 @@ impl ConfigCache {
                 stdout: String::new(),
                 stderr,
             },
+        }
+    }
+
+    fn config(&mut self, config_path: &Path) -> Result<&crate::config::Config, String> {
+        let key = config_path.to_path_buf();
+        self.prepare_slot(&key);
+        let entry = self.entries.entry(key).or_default();
+        entry.config(config_path)
+    }
+
+    fn prepare_slot(&mut self, config_path: &PathBuf) {
+        self.access_order.retain(|path| path != config_path);
+        self.access_order.push_back(config_path.clone());
+
+        if self.entries.contains_key(config_path) {
+            return;
+        }
+
+        while self.entries.len() >= MAX_CONFIG_CACHE_ENTRIES {
+            let Some(oldest) = self.access_order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
         }
     }
 }
@@ -288,4 +313,75 @@ fn read_json<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> Result<
 fn write_json<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), String> {
     serde_json::to_writer(&mut *stream, value).map_err(|err| err.to_string())?;
     stream.write_all(b"\n").map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        std::env::temp_dir().join(format!("summon_server_{label}_{suffix}"))
+    }
+
+    #[test]
+    fn config_cache_evicts_oldest_unique_paths() {
+        let root = unique_test_dir("config_cache_evicts_oldest");
+        fs::create_dir_all(&root).expect("should create temp dir");
+
+        let mut cache = ConfigCache::default();
+        let mut paths = Vec::new();
+
+        for idx in 0..=MAX_CONFIG_CACHE_ENTRIES {
+            let path = root.join(format!("config-{idx}.toml"));
+            fs::write(&path, format!("[bindings.app{idx}]\napp = \"Finder\"\n"))
+                .expect("should write config");
+            cache.config(&path).expect("config should load");
+            paths.push(path);
+        }
+
+        assert_eq!(cache.entries.len(), MAX_CONFIG_CACHE_ENTRIES);
+        assert!(!cache.entries.contains_key(&paths[0]));
+        assert!(
+            cache
+                .entries
+                .contains_key(paths.last().expect("should have paths"))
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn config_cache_keeps_recently_reused_path() {
+        let root = unique_test_dir("config_cache_keeps_reused");
+        fs::create_dir_all(&root).expect("should create temp dir");
+
+        let mut cache = ConfigCache::default();
+        let mut paths = Vec::new();
+
+        for idx in 0..MAX_CONFIG_CACHE_ENTRIES {
+            let path = root.join(format!("config-{idx}.toml"));
+            fs::write(&path, format!("[bindings.app{idx}]\napp = \"Finder\"\n"))
+                .expect("should write config");
+            cache.config(&path).expect("config should load");
+            paths.push(path);
+        }
+
+        cache.config(&paths[0]).expect("reused config should load");
+
+        let next_path = root.join("config-next.toml");
+        fs::write(&next_path, "[bindings.next]\napp = \"Finder\"\n").expect("should write config");
+        cache.config(&next_path).expect("new config should load");
+
+        assert_eq!(cache.entries.len(), MAX_CONFIG_CACHE_ENTRIES);
+        assert!(cache.entries.contains_key(&paths[0]));
+        assert!(!cache.entries.contains_key(&paths[1]));
+        assert!(cache.entries.contains_key(&next_path));
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }

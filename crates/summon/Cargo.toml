@@ -1,5 +1,5 @@
 [package]
-name = "summon"
+name = "summon-switcher"
 description = "A tiny macOS command-line tool for opening, focusing, and cycling applications from declarative keybindings."
 version.workspace = true
 edition.workspace = true
@@ -8,6 +8,13 @@ repository.workspace = true
 readme = "../../README.md"
 keywords = ["macos", "cli", "focus", "app-switcher", "accessibility"]
 categories = ["command-line-utilities", "os::macos-apis"]
+
+[lib]
+name = "summon"
+
+[[bin]]
+name = "summon"
+path = "src/main.rs"
 
 [dependencies]
 accessibility = "0.2"
