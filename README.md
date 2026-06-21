@@ -28,12 +28,23 @@ Summon is designed to be fast, boring, and easy to keep in your dotfiles.
 
 ## Installation
 
+### Homebrew
+
+```sh
+brew install liamwh/summon-switcher/summon-switcher
+```
+
+### Cargo
+
 ```sh
 cargo install summon-switcher
+```
 
-brew install liamwh/summon-switcher/summon-switcher
+### From source
 
-# from source, install to ~/bin and start the warm daemon path
+Builds from the repo and installs to `~/bin`, also starting the warm daemon path:
+
+```sh
 just install
 ```
 
